@@ -1,0 +1,15 @@
+# CPU DVFS stack (vendor cpufreq_v2: SSPM + CPU_DVFS), dependencies first; the first four are shared with the connectivity stack
+emimpu
+pmic_lbat_service
+pmic_lvsys_notify
+mtk_low_battery_throttling
+sspm_v1
+mtk_cpuhp
+mtk_mdpm_v1
+mtk_dynamic_loading_throttling
+mtk_pbm
+mtk_battery_oc_throttling
+mediatek_static_power
+Upower
+mtk_ppm_v3
+CPU_DVFS

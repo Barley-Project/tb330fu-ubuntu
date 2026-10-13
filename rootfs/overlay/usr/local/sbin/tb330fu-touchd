@@ -1,0 +1,197 @@
+#!/usr/bin/python3
+"""Touch proxy for the Himax HX83102J touchscreen (tb330fu).
+
+The Himax driver registers gesture KEY_* codes and BTN_LEFT/RIGHT/MIDDLE besides the multitouch axes; libinput therefore reports "keyboard pointer touch" and
+mutter (which picks the device type pointer-before-touch) treats the panel as an absolute *pointer*: it is neither mapped to the built-in monitor nor rotated
+with it, so on the landscape desktop (panel orientation RIGHT_UP) the touch coordinates are wrong (touching the left of the screen hits the right).
+
+This daemon waits for the GNOME session, grabs the Himax event device (EVIOCGRAB) and re-emits the multitouch events through uinput as a clean touchscreen
+(slots, tracking id, position, BTN_TOUCH only).  A touchscreen that appears after mutter started is mapped to the built-in monitor, with the panel
+orientation applied (verified with synthetic taps).  Restarted together with tb330fu-gnome.service (PartOf=).
+
+Screen off: while the backlight is off (/sys/class/backlight/tb330fu_bl/bl_power != 0, set by simpledrm when the CRTC is disabled) touches are dropped, like on
+any tablet. Fingers that are down when the screen goes off are released on the virtual device; a finger that is still down when the screen comes back is
+ignored until it is lifted, so the desktop never sees a half-finished touch.
+"""
+import fcntl
+import os
+import re
+import select
+import struct
+import subprocess
+import sys
+import time
+
+EV_SYN, EV_KEY, EV_ABS = 0, 1, 3
+BTN_TOUCH = 0x14a
+ABS_X, ABS_Y, ABS_MT_SLOT, ABS_MT_TRACKING_ID, ABS_MT_POSITION_X, ABS_MT_POSITION_Y = 0, 1, 0x2f, 0x39, 0x35, 0x36
+UI_SET_EVBIT, UI_SET_KEYBIT, UI_SET_ABSBIT, UI_SET_PROPBIT = 0x40045564, 0x40045565, 0x40045567, 0x4004556e
+UI_DEV_SETUP, UI_ABS_SETUP, UI_DEV_CREATE, UI_DEV_DESTROY = 0x405c5503, 0x401c5504, 0x5501, 0x5502
+EVIOCGRAB = 0x40044590
+FMT = "llHHi"
+SZ = struct.calcsize(FMT)
+BL_POWER = "/sys/class/backlight/tb330fu_bl/bl_power"
+
+
+def log(*a):
+    print("tb330fu-touchd:", *a, flush=True)
+
+
+def ev(t, c, v):
+    return struct.pack(FMT, 0, 0, t, c, v)
+
+
+def eviocgabs(code):
+    return (2 << 30) | (24 << 16) | (ord("E") << 8) | (0x40 + code)
+
+
+def find_himax():
+    for block in open("/proc/bus/input/devices").read().split("\n\n"):
+        if 'Name="himax-touchscreen"' in block:
+            m = re.search(r"Handlers=.*?(event\d+)", block)
+            if m:
+                return "/dev/input/" + m.group(1)
+    return None
+
+
+def screen_is_off():
+    try:
+        with open(BL_POWER) as f:
+            return f.read().strip() not in ("0", "")
+    except OSError:
+        return False  # no backlight driver: never block the touchscreen
+
+
+# 1. the GNOME session must be up first (a touchscreen present before mutter started is never handed to its input mapper)
+for _ in range(240):
+    if subprocess.call(["pgrep", "-x", "gnome-shell"], stdout=subprocess.DEVNULL) == 0:
+        break
+    time.sleep(0.5)
+else:
+    sys.exit("gnome-shell did not start")
+time.sleep(6)
+
+path = None
+for _ in range(60):
+    path = find_himax()
+    if path:
+        break
+    time.sleep(1)
+if not path:
+    sys.exit("no himax-touchscreen input device")
+src = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+ranges = {}
+for code in (ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_TRACKING_ID, ABS_MT_SLOT):
+    buf = bytearray(24)
+    fcntl.ioctl(src, eviocgabs(code), buf)
+    ranges[code] = struct.unpack("<6i", buf)[1:3]
+log("source", path, "ranges", {hex(k): v for k, v in ranges.items()})
+
+# 2. the clean virtual touchscreen
+dst = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+fcntl.ioctl(dst, UI_SET_EVBIT, EV_KEY)
+fcntl.ioctl(dst, UI_SET_EVBIT, EV_ABS)
+fcntl.ioctl(dst, UI_SET_KEYBIT, BTN_TOUCH)
+fcntl.ioctl(dst, UI_SET_PROPBIT, 1)  # INPUT_PROP_DIRECT
+for code, (lo, hi) in ((ABS_X, ranges[ABS_MT_POSITION_X]), (ABS_Y, ranges[ABS_MT_POSITION_Y]), (ABS_MT_SLOT, ranges[ABS_MT_SLOT]),
+                       (ABS_MT_TRACKING_ID, ranges[ABS_MT_TRACKING_ID]), (ABS_MT_POSITION_X, ranges[ABS_MT_POSITION_X]),
+                       (ABS_MT_POSITION_Y, ranges[ABS_MT_POSITION_Y])):
+    fcntl.ioctl(dst, UI_SET_ABSBIT, code)
+    fcntl.ioctl(dst, UI_ABS_SETUP, struct.pack("<HHiiiiii", code, 0, 0, lo, hi, 0, 0, 0))
+fcntl.ioctl(dst, UI_DEV_SETUP, struct.pack("<HHHH80sI", 3, 0x1d6b, 0x0330, 1, b"tb330fu touchscreen", 0))
+fcntl.ioctl(dst, UI_DEV_CREATE)
+time.sleep(1)
+fcntl.ioctl(src, EVIOCGRAB, 1)
+log("grabbed", path, "and created the virtual touchscreen")
+
+slot = 0
+real = set()          # slots with a finger down on the panel
+sent = set()          # slots the virtual touchscreen has been told about (down, not yet up)
+paused = False        # screen is off
+blocked = False       # drop everything until all fingers are up (set when the screen goes off)
+sync_slot = False     # the virtual device's current slot may differ from ours: send ABS_MT_SLOT before the next forwarded MT event
+last_poll = 0.0
+
+
+def release_all():
+    """tell the desktop that every forwarded finger is up"""
+    global sync_slot
+    out = bytearray()
+    for s in sorted(sent):
+        out += ev(EV_ABS, ABS_MT_SLOT, s) + ev(EV_ABS, ABS_MT_TRACKING_ID, -1)
+    if out:
+        out += ev(EV_KEY, BTN_TOUCH, 0) + ev(EV_SYN, 0, 0)
+        os.write(dst, bytes(out))
+    sent.clear()
+    sync_slot = True
+
+
+try:
+    while True:
+        ready, _, _ = select.select([src], [], [], 0.25)
+        now = time.monotonic()
+        if now - last_poll >= 0.1:
+            last_poll = now
+            off = screen_is_off()
+            if off and not paused:
+                paused = True
+                blocked = True
+                release_all()
+                log("screen off: touch paused")
+            elif not off and paused:
+                paused = False
+                if not real:
+                    blocked = False
+                    sync_slot = True
+                log("screen on: touch resumes when all fingers are up" if real else "screen on: touch resumed")
+        if not ready:
+            continue
+        try:
+            data = os.read(src, SZ * 128)
+        except BlockingIOError:
+            continue
+        out = bytearray()
+        for i in range(0, len(data) - SZ + 1, SZ):
+            _, _, t, c, v = struct.unpack_from(FMT, data, i)
+            # bookkeeping of the real fingers (always)
+            if t == EV_ABS and c == ABS_MT_SLOT:
+                slot = v
+            elif t == EV_ABS and c == ABS_MT_TRACKING_ID:
+                if v >= 0:
+                    real.add(slot)
+                else:
+                    real.discard(slot)
+            if t == EV_SYN and c == 0 and blocked and not paused and not real:
+                blocked = False
+                sync_slot = True
+            if blocked:
+                continue
+            if t == EV_SYN:
+                if c == 0:
+                    out += ev(EV_SYN, 0, 0)
+            elif t == EV_ABS and c in (ABS_MT_SLOT, ABS_MT_TRACKING_ID, ABS_MT_POSITION_X, ABS_MT_POSITION_Y):
+                if sync_slot and c != ABS_MT_SLOT:
+                    out += ev(EV_ABS, ABS_MT_SLOT, slot)
+                    sync_slot = False
+                elif c == ABS_MT_SLOT:
+                    sync_slot = False
+                if c == ABS_MT_TRACKING_ID:
+                    if v >= 0:
+                        sent.add(slot)
+                    else:
+                        sent.discard(slot)
+                out += ev(EV_ABS, c, v)
+                if slot == 0 and c == ABS_MT_POSITION_X:
+                    out += ev(EV_ABS, ABS_X, v)
+                elif slot == 0 and c == ABS_MT_POSITION_Y:
+                    out += ev(EV_ABS, ABS_Y, v)
+            elif t == EV_KEY and c == BTN_TOUCH:
+                out += ev(EV_KEY, BTN_TOUCH, v)
+        if out:
+            os.write(dst, bytes(out))
+finally:
+    try:
+        fcntl.ioctl(src, EVIOCGRAB, 0)
+    except OSError:
+        pass
+    fcntl.ioctl(dst, UI_DEV_DESTROY)

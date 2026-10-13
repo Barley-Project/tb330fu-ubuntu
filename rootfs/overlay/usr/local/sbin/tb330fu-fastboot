@@ -1,0 +1,26 @@
+#!/usr/bin/python3
+"""Reboot the tablet into the bootloader (fastboot) or another reboot-mode target.
+
+The kernel's reboot-mode driver (syscon-reboot-mode, DT node under toprgu) turns the argument of reboot(RESTART2, "<mode>") into RGU NONRST_REG2 = 3 for
+"bootloader", which LK honours.  `systemctl reboot bootloader` does NOT hand the argument to the kernel (systemd 255), so call reboot(2) directly.
+usage: tb330fu-fastboot [bootloader|recovery|...]   (default: bootloader)"""
+import ctypes
+import os
+import subprocess
+import sys
+import time
+
+mode = sys.argv[1] if len(sys.argv) > 1 else "bootloader"
+if os.geteuid() != 0:
+    sys.exit("run as root (sudo tb330fu-fastboot)")
+if not os.path.isdir("/sys/bus/platform/drivers/syscon-reboot-mode"):
+    sys.exit("syscon-reboot-mode is not bound: the argument would be ignored, refusing to reboot")
+print("rebooting into '%s' ..." % mode, flush=True)
+subprocess.call(["sync"])
+subprocess.call(["mount", "-o", "remount,ro", "/"], stderr=subprocess.DEVNULL)
+time.sleep(0.5)
+libc = ctypes.CDLL(None, use_errno=True)
+libc.syscall.restype = ctypes.c_long
+# reboot(LINUX_REBOOT_MAGIC1, LINUX_REBOOT_MAGIC2, LINUX_REBOOT_CMD_RESTART2, arg); __NR_reboot = 142 on arm64
+r = libc.syscall(142, 0xfee1dead, 672274793, 0xA1B2C3D4, ctypes.c_char_p(mode.encode()))
+sys.exit("reboot syscall returned %d (errno %d)" % (r, ctypes.get_errno()))

@@ -1,0 +1,168 @@
+#!/usr/bin/python3
+"""TB330FU power key policy: short press = screen off / screen on, long press = power menu (power off / restart / cancel), like any tablet.
+
+The power key is KEY_POWER of the PMIC key driver (device "mtk-pmic-keys"). GNOME's own power-button-action is set to 'nothing' (dconf), logind is kept away
+from the key by the inhibitor that gsd-media-keys holds, so this daemon is the only one that reacts.
+
+  short press   screen on  -> off: mutter PowerSaveMode = 3 (the CRTC is disabled, simpledrm switches the backlight off, tb330fu-touchd drops touches)
+                screen off -> on : PowerSaveMode = 0 (the first frame switches the backlight on again)
+  long press    (>= LONG_PRESS_S, fired while the key is still held) wakes the screen and shows tb330fu-powermenu in the GNOME session
+  menu open     a short press closes it
+
+Without a GNOME session the daemon does nothing (logind's default then applies: short press = power off).
+Holding the key for ~10 s is handled by the PMIC itself (hard power off), independent of this daemon.
+"""
+import os
+import pwd
+import select
+import struct
+import subprocess
+import sys
+import time
+
+KEY_POWER = 116
+LONG_PRESS_S = 0.8
+DEBOUNCE_S = 0.15
+USER = "ubuntu"
+BL = "/sys/class/backlight/tb330fu_bl/bl_power"
+FMT = "llHHi"
+SZ = struct.calcsize(FMT)
+
+UID = pwd.getpwnam(USER).pw_uid
+RUN = "/run/user/%d" % UID
+ENV = ["XDG_RUNTIME_DIR=" + RUN, "DBUS_SESSION_BUS_ADDRESS=unix:path=%s/bus" % RUN, "WAYLAND_DISPLAY=wayland-0", "GTK_A11Y=none", "LANG=zh_CN.UTF-8"]
+MUTTER = ["busctl", "--user", None, "org.gnome.Mutter.DisplayConfig", "/org/gnome/Mutter/DisplayConfig", "org.gnome.Mutter.DisplayConfig"]
+
+
+def log(*a):
+    print("tb330fu-keysd:", *a, flush=True)
+
+
+def as_user(args, timeout=10):
+    return subprocess.run(["runuser", "-u", USER, "--", "env"] + ENV + args, capture_output=True, text=True, timeout=timeout)
+
+
+def session_up():
+    return os.path.exists(RUN + "/bus") and subprocess.call(["pgrep", "-u", USER, "-x", "gnome-shell"], stdout=subprocess.DEVNULL) == 0
+
+
+def mutter(verb, *rest):
+    cmd = list(MUTTER)
+    cmd[2] = verb
+    return as_user(cmd + list(rest))
+
+
+def bl_power():
+    try:
+        with open(BL) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def screen_is_off():
+    p = bl_power()
+    if p is not None:
+        return p != "0"
+    r = mutter("get-property", "PowerSaveMode")
+    return r.returncode == 0 and r.stdout.split()[-1:] not in (["0"], [])
+
+
+def set_screen(on):
+    if not session_up():
+        return
+    r = mutter("set-property", "PowerSaveMode", "i", "0" if on else "3")
+    if r.returncode != 0:
+        log("PowerSaveMode failed:", r.stderr.strip())
+    time.sleep(0.5)
+    p = bl_power()
+    if p is not None:
+        if on and p != "0":
+            log("backlight did not come back with the CRTC, forcing it")
+            open(BL, "w").write("0")
+        elif not on and p == "0":
+            log("backlight stayed on after PowerSaveMode=3, forcing it off")
+            open(BL, "w").write("4")
+    log("screen", "on" if on else "off")
+
+
+def find_key_device():
+    for n in sorted(os.listdir("/sys/class/input")):
+        if n.startswith("event"):
+            try:
+                if open("/sys/class/input/%s/device/name" % n).read().strip() == "mtk-pmic-keys":
+                    return "/dev/input/" + n
+            except OSError:
+                pass
+    return None
+
+
+menu = None
+
+
+def menu_open():
+    return menu is not None and menu.poll() is None
+
+
+def show_menu():
+    global menu
+    if screen_is_off():
+        set_screen(True)
+    menu = subprocess.Popen(["runuser", "-u", USER, "--", "env"] + ENV + ["python3", "/usr/local/sbin/tb330fu-powermenu"])
+    log("power menu opened")
+
+
+def short_press():
+    if menu_open():
+        menu.terminate()
+        log("power menu closed")
+        return
+    if not session_up():
+        return
+    set_screen(screen_is_off())
+
+
+def main():
+    path = None
+    while path is None:
+        path = find_key_device()
+        if path is None:
+            time.sleep(1)
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    log("listening on", path)
+    pressed_at = None
+    fired = False
+    released_at = 0.0
+    while True:
+        timeout = 0.05 if (pressed_at is not None and not fired) else 1.0
+        ready, _, _ = select.select([fd], [], [], timeout)
+        now = time.monotonic()
+        if pressed_at is not None and not fired and now - pressed_at >= LONG_PRESS_S:
+            fired = True
+            if session_up():
+                show_menu()
+        if not ready:
+            continue
+        try:
+            data = os.read(fd, SZ * 32)
+        except BlockingIOError:
+            continue
+        for i in range(0, len(data) - SZ + 1, SZ):
+            _, _, t, c, v = struct.unpack_from(FMT, data, i)
+            if t != 1 or c != KEY_POWER:
+                continue
+            if v == 1 and pressed_at is None and now - released_at >= DEBOUNCE_S:
+                pressed_at = now
+                fired = False
+            elif v == 0 and pressed_at is not None:
+                if not fired:
+                    short_press()
+                pressed_at = None
+                released_at = time.monotonic()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(0)

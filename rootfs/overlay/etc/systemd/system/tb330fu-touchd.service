@@ -1,0 +1,13 @@
+[Unit]
+Description=TB330FU touch proxy (re-emits the Himax touchscreen as a clean touchscreen once the GNOME session is up)
+After=tb330fu-gnome.service
+PartOf=tb330fu-gnome.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/sbin/tb330fu-touchd
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical.target

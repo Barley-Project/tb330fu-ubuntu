@@ -1,0 +1,12 @@
+hqsys_pcba.ko
+pd_dbg_info.ko
+tcpc_class.ko
+mm8013.ko
+hqsysfs.ko
+hq_kallsyms.ko
+i2c-hid.ko
+mtk_disp_notify.ko
+himax_mmi.ko
+spi-mt65xx.ko
+reboot-mode.ko
+syscon-reboot-mode.ko

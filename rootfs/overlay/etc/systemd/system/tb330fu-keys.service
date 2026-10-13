@@ -1,0 +1,12 @@
+[Unit]
+Description=TB330FU hardware keys (power, volume up/down: PMIC keys + SoC keypad drivers)
+After=tb330fu-devd.service local-fs.target
+Before=tb330fu-gnome.service graphical.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh /usr/libexec/tb330fu-keys.sh
+
+[Install]
+WantedBy=multi-user.target

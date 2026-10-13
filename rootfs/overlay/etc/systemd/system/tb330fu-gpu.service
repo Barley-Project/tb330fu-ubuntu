@@ -1,0 +1,13 @@
+[Unit]
+Description=TB330FU GPU bring-up (Panfrost, GPU rendering for the desktop)
+After=tb330fu-devd.service local-fs.target
+Before=tb330fu-session.service graphical.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh /usr/libexec/tb330fu-gpu.sh
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

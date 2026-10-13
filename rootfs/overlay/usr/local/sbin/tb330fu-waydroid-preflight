@@ -1,0 +1,59 @@
+#!/bin/sh
+# Read-only, manual preflight only. This script never mounts binderfs or starts Waydroid.
+set -u
+CONFIG_FILE=${TB330FU_KERNEL_CONFIG:-/usr/share/tb330fu/kernel-config.row074}
+blocked=0
+pass() { echo "PASS: $*"; }
+blocked() { echo "BLOCKED: $*"; blocked=1; }
+
+if [ -r "$CONFIG_FILE" ]; then
+    for option in CONFIG_ANDROID_BINDER_IPC CONFIG_ANDROID_BINDERFS CONFIG_NAMESPACES \
+                  CONFIG_UTS_NS CONFIG_IPC_NS CONFIG_PID_NS CONFIG_USER_NS CONFIG_NET_NS \
+                  CONFIG_CGROUPS CONFIG_CGROUP_PIDS CONFIG_CGROUP_DEVICE CONFIG_MEMFD_CREATE; do
+        if grep -qx "$option=y" "$CONFIG_FILE"; then pass "$option=y"; else blocked "$option is not enabled in the ROW kernel config"; fi
+    done
+else
+    blocked "kernel config unavailable at $CONFIG_FILE"
+fi
+
+if grep -Eq '^[[:space:]]*nodev[[:space:]]+binder[[:space:]]*$' /proc/filesystems 2>/dev/null; then
+    pass "binder filesystem is registered"
+else
+    blocked "binder filesystem is not registered at runtime"
+fi
+if grep -q ' /sys/fs/cgroup cgroup2 ' /proc/mounts 2>/dev/null && [ -r /sys/fs/cgroup/cgroup.controllers ]; then
+    pass "unified cgroup v2 is mounted ($(cat /sys/fs/cgroup/cgroup.controllers))"
+else
+    blocked "unified cgroup v2 controllers are unavailable"
+fi
+if [ -d /dev/binderfs ] && grep -q ' /dev/binderfs binder ' /proc/mounts 2>/dev/null; then
+    pass "binderfs is mounted at /dev/binderfs"
+else
+    echo "INFO: binderfs is not mounted; preflight will not mount it"
+fi
+if command -v unshare >/dev/null 2>&1 && unshare --user --map-root-user true >/dev/null 2>&1; then
+    pass "user namespaces can be created"
+else
+    blocked "user namespace runtime check failed"
+fi
+if command -v unshare >/dev/null 2>&1 && unshare --pid --fork true >/dev/null 2>&1; then
+    pass "PID namespaces can be created"
+else
+    blocked "PID namespace runtime check failed"
+fi
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import os; fd=os.memfd_create("tb330fu-preflight"); os.close(fd)' >/dev/null 2>&1; then
+    pass "memfd_create syscall works"
+else
+    blocked "memfd_create runtime check failed"
+fi
+if command -v waydroid >/dev/null 2>&1; then
+    echo "INFO: Waydroid binary is installed, but no Waydroid unit is enabled by this image"
+else
+    echo "INFO: Waydroid is not installed and no Waydroid unit is enabled"
+fi
+
+if [ "$blocked" -ne 0 ]; then
+    echo "BLOCKED: do not install/start Waydroid until every prerequisite passes"
+    exit 1
+fi
+echo "PASS: Waydroid prerequisites pass; this check did not mount or start anything"

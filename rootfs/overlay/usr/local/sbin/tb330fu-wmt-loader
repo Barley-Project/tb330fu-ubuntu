@@ -1,0 +1,104 @@
+#!/usr/bin/python3
+"""Replacement for Android's /vendor/bin/wmt_loader (MediaTek connectivity "WMT detect" loader) for the SoC integrated combo chip of the MT6768 (soc1_0).
+
+Same ioctl sequence on /dev/wmtdetect as the vendor binary (reverse engineered from its disassembly, ROW074 vendor image):
+  CONNSYS_SOC_HW_INIT -> (EXT_CHIP_PWR_ON fails with -1: no external combo chip) -> GET_SOC_CHIP_ID -> SET_CHIP_ID -> MODULE_CLEANUP -> DO_MODULE_INIT
+  -> GET_ADIE_CHIP_ID.
+Android properties are replaced by files in /run/tb330fu/prop/ (vendor.connsys.driver.ready etc.).  Needs wmt_drv.ko (and its dependencies) loaded."""
+import fcntl
+import os
+import sys
+import time
+
+
+def _ioc(d, nr, size=4, t=0x77):
+    return (d << 30) | (size << 16) | (t << 8) | nr
+
+
+def IOR(nr):
+    return _ioc(2, nr)
+
+
+def IOW(nr):
+    return _ioc(1, nr)
+
+
+PROP = "/run/tb330fu/prop"
+os.makedirs(PROP, exist_ok=True)
+
+
+def prop_set(k, v):
+    with open(os.path.join(PROP, k), "w") as f:
+        f.write(v)
+
+
+def prop_get(k):
+    try:
+        return open(os.path.join(PROP, k)).read().strip()
+    except OSError:
+        return ""
+
+
+def log(*a):
+    print("wmt_loader:", *a, flush=True)
+
+
+def ioctl(fd, req, arg=0):
+    try:
+        return fcntl.ioctl(fd, req, arg)
+    except OSError as e:
+        log("ioctl 0x%08x(%s) -> -1 errno %d (%s)" % (req, arg, e.errno, os.strerror(e.errno)))
+        return -1
+
+
+if prop_get("vendor.connsys.driver.ready") == "yes":
+    log("WMT driver has been ready.")
+    sys.exit(0)
+
+fd = -1
+for n in range(100):
+    try:
+        fd = os.open("/dev/wmtdetect", os.O_RDWR)
+        break
+    except OSError:
+        time.sleep(0.3)
+if fd < 0:
+    sys.exit("wmt_loader: cannot open /dev/wmtdetect (is wmt_drv.ko loaded?)")
+
+r = ioctl(fd, IOR(10))                       # COMBO_IOCTL_CONNSYS_SOC_HW_INIT
+if r != 0:
+    sys.exit("wmt_loader: COMBO_IOCTL_CONNSYS_SOC_HW_INIT failed (%d)" % r)
+
+chipid = -1
+for attempt in range(10):
+    p = ioctl(fd, IOR(6))                    # COMBO_IOCTL_EXT_CHIP_PWR_ON: -1 = SoC chip, no external combo chip to power
+    if p == -1:
+        log("SOC chip no need do combo chip power on.")
+    chipid = ioctl(fd, IOR(3))               # COMBO_IOCTL_GET_SOC_CHIP_ID
+    log("chipid (0x%x) detected" % (chipid & 0xffffffff))
+    if chipid != -1:
+        break
+    time.sleep(0.5)
+if chipid == -1:
+    sys.exit("wmt_loader: chip id error")
+prop_set("persist.vendor.connsys.chipid", "0x%04x" % chipid)
+
+ioctl(fd, IOW(1), chipid)                    # COMBO_IOCTL_SET_CHIP_ID
+# legacy hardware code -> platform chip id mapping of the vendor binary (a SoC id such as 0x6768 is passed through unchanged)
+legacy = {0x321: 0x6735, 0x335: 0x6735, 0x337: 0x6735, 0x326: 0x6755, 0x507: 0x6759, 0x551: 0x6757, 0x690: 0x6763, 0x713: 0x6775, 0x788: 0x6771,
+          0x279: 0x6797}
+cid = legacy.get(chipid, chipid)
+r = ioctl(fd, IOR(5), cid)                   # COMBO_IOCTL_MODULE_CLEANUP
+if r != 0:
+    sys.exit("wmt_loader: WMT-DETECT module cleanup failed (%d)" % r)
+r = ioctl(fd, IOR(4), cid)                   # COMBO_IOCTL_DO_MODULE_INIT
+if r != 0:
+    sys.exit("wmt_loader: kernel module init failed (%d)" % r)
+log("do kernel module init succeed: %d" % r)
+adie = ioctl(fd, IOR(9))                     # COMBO_IOCTL_GET_ADIE_CHIP_ID
+log("adie chip id = 0x%x" % (adie & 0xffffffff))
+if adie != -1:
+    prop_set("vendor.connsys.adie.chipid", "0x%04x" % adie)
+os.close(fd)
+prop_set("vendor.connsys.driver.ready", "yes")
+log("done: vendor.connsys.driver.ready=yes")

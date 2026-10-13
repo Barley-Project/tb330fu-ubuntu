@@ -1,0 +1,221 @@
+#!/usr/bin/python3
+"""Replacement for Android's /vendor/bin/wmt_launcher (MediaTek connectivity "WMT" launcher) for the SoC integrated combo chip of the MT6768 (soc1_0).
+
+Reverse engineered from the disassembly of the ROW074 vendor binary ("wmt_launcher -p /vendor/firmware/ -o 1").  For a SoC chip it does:
+  QUERY_CHIPID, SET_STP_MODE (BTIF = 3 | FM mode 2 << 4), SET_LAUNCHER_KILL(0), a "pwr_on_conn" thread that runs LPBK_POWER_CTRL(2) (the driver powers the
+  CONNSYS, downloads the firmware and runs it once), and then serves the driver's commands on /dev/stpwmt:
+     the driver writes a command string that can be read (poll/read), the launcher answers by writing "ok":
+       srh_patch      -> find the MCU patch file in /vendor/firmware and hand its name and load info to the driver (SET_PATCH_NUM, SET_PATCH_INFO)
+       srh_rom_patch  -> the same for the RAM code images mcu/bt/wifi (SET_ROM_PATCH_INFO)
+  The patch files are read by the kernel itself (firmware path /vendor/firmware).  Android properties are files in /run/tb330fu/prop.
+usage: tb330fu-wmt-launcher [-o power_on_arg] [-v]"""
+import fcntl
+import os
+import select
+import signal
+import struct
+import sys
+import threading
+import time
+
+PROP = "/run/tb330fu/prop"
+FWDIR = "/vendor/firmware"
+PREFIX_PATCH = "soc1_0_patch"
+PREFIX_ROM = "soc1_0_ram"
+PATTERN = "1a_1"      # hardware/ROM version suffix of the images (launcher_get_patch_pattern)
+
+
+def _ioc(d, nr, size, t=0xa0):
+    return (d << 30) | (size << 16) | (t << 8) | nr
+
+
+def W(nr, size=4):
+    return _ioc(1, nr, size)
+
+
+def R(nr, size=4):
+    return _ioc(2, nr, size)
+
+
+SET_STP_MODE = W(5)
+LPBK_POWER_CTRL = W(7)
+GET_CHIP_INFO = R(12)
+SET_LAUNCHER_KILL = W(13)
+SET_PATCH_NUM = W(14)
+SET_PATCH_INFO = W(15, 8)
+QUERY_CHIPID = R(22)
+SET_ROM_PATCH_INFO = W(31, 8)
+GET_FW_VER = R(43, 8)
+
+
+def log(*a):
+    print("wmt_launcher:", *a, flush=True)
+
+
+def prop_get(k):
+    try:
+        return open(os.path.join(PROP, k)).read().strip()
+    except OSError:
+        return ""
+
+
+def prop_set(k, v):
+    os.makedirs(PROP, exist_ok=True)
+    with open(os.path.join(PROP, k), "w") as f:
+        f.write(v)
+
+
+def ioctl(fd, req, arg=0):
+    try:
+        return fcntl.ioctl(fd, req, arg)
+    except OSError as e:
+        log("ioctl 0x%08x(%r) failed: errno %d (%s)" % (req, arg if isinstance(arg, int) else "buf", e.errno, os.strerror(e.errno)))
+        return -1
+
+
+args = sys.argv[1:]
+power_arg = 2         # the vendor binary maps "-o 1" to LPBK_POWER_CTRL(2)
+while args:
+    a = args.pop(0)
+    if a == "-o":
+        power_arg = int(args.pop(0))
+
+for _ in range(300):
+    if prop_get("vendor.connsys.driver.ready") == "yes":
+        break
+    time.sleep(0.2)
+else:
+    sys.exit("wmt_launcher: vendor.connsys.driver.ready never became yes (run tb330fu-wmt-loader first)")
+
+fd = -1
+for _ in range(100):
+    try:
+        fd = os.open("/dev/stpwmt", os.O_RDWR)
+        break
+    except OSError:
+        time.sleep(0.3)
+if fd < 0:
+    sys.exit("wmt_launcher: cannot open /dev/stpwmt")
+log("open device node succeed (/dev/stpwmt fd %d)" % fd)
+
+chip = ioctl(fd, QUERY_CHIPID)
+log("chip_id from kernel by ioctl: 0x%04x" % (chip & 0xffffffff))
+if chip <= 0:
+    sys.exit("wmt_launcher: invalid chip id")
+# SoC chip (not one of the external combo chips 0x6620/0x6628/0x6630/0x6632): stp mode BTIF (3), fm mode 2; TELL_CHIPID and CFG_NAME are only for combo chips
+ioctl(fd, SET_STP_MODE, (2 << 4) | 3)
+ioctl(fd, SET_LAUNCHER_KILL, 0)
+
+
+def bye(signum, frame):
+    log("signal %d: telling the driver that the launcher is gone" % signum)
+    ioctl(fd, SET_LAUNCHER_KILL, 1)
+    sys.exit(0)
+
+
+for s in (signal.SIGTERM, signal.SIGINT):
+    signal.signal(s, bye)
+signal.signal(signal.SIGHUP, signal.SIG_IGN)
+signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+
+
+def candidates(prefix, fwver):
+    """patch files: name starts with the prefix, contains the pattern, byte 0x17 of the header equals the low byte of the ROM/FW version"""
+    out = []
+    for name in os.listdir(FWDIR):
+        if not name.startswith(prefix) or PATTERN not in name:
+            continue
+        try:
+            with open(os.path.join(FWDIR, name), "rb") as f:
+                f.seek(0x16)
+                ver = f.read(2)
+                f.seek(0x18)
+                info = f.read(8)
+        except OSError as e:
+            log("open patch file(%s) failed: %s" % (name, e))
+            continue
+        log("%s: fw Ver in patch: 0x%02x%02x, driver version 0x%04x" % (name, ver[0], ver[1], fwver & 0xffff))
+        if len(ver) < 2 or ver[1] != (fwver & 0xff):
+            continue
+        out.append((name, info))
+    return out
+
+
+def cmd_srh_patch():
+    fwver = ioctl(fd, GET_CHIP_INFO, 2)
+    log("fw_version:0x%04x" % (fwver & 0xffff))
+    first = True
+    n = 0
+    for name, info in candidates(PREFIX_PATCH, fwver):
+        pi = info[:4]
+        log("read patch info:0x%02x,0x%02x,0x%02x,0x%02x" % tuple(pi))
+        if first:
+            log("patch num = [%d]" % (pi[0] >> 4))
+            ioctl(fd, SET_PATCH_NUM, pi[0] >> 4)
+        log("patch seq = [%d]" % (pi[0] & 0xf))
+        buf = bytearray(struct.pack("<I4s256s", pi[0] & 0xf, b"\0" + pi[1:4], name.encode()))
+        ioctl(fd, SET_PATCH_INFO, buf)
+        first = False
+        n += 1
+    return 0 if n else -6
+
+
+def cmd_srh_rom_patch():
+    fwver = ioctl(fd, GET_CHIP_INFO, 2)
+    log("fw_version:0x%04x" % (fwver & 0xffff))
+    n = 0
+    for name, info in candidates(PREFIX_ROM, fwver):
+        if len(info) < 8 or info[3] < 0x10 or info[7] > 5:
+            continue
+        log("patch info:" + ",".join("0x%02x" % b for b in info) + "  rom patch type = [%d]" % info[7])
+        buf = bytearray(struct.pack("<I4s256s", info[7], b"\0" + info[1:4], name.encode()))
+        if ioctl(fd, SET_ROM_PATCH_INFO, buf) != 0:
+            return -3
+        n += 1
+    return 0 if n else -6
+
+
+result = {}
+
+
+def pwr_on_conn():
+    log("enter power on connsys flow")
+    for retry in range(20):
+        if ioctl(fd, LPBK_POWER_CTRL, power_arg) == 0:
+            result["ok"] = True
+            break
+        ioctl(fd, LPBK_POWER_CTRL, 0)
+        log("power on 0x%x failed, retrying, retry counter:%d" % (chip, retry))
+        time.sleep(1)
+    else:
+        result["ok"] = False
+    log("power on flow finished: %s" % ("ok" if result["ok"] else "FAILED"))
+    buf = bytearray(128)
+    if ioctl(fd, GET_FW_VER, buf) >= 0:
+        ver = bytes(buf).split(b"\0")[0].decode(errors="replace")
+        log("fw ver: %r" % ver)
+        if len(ver) > 13:
+            prop_set("vendor.connsys.bt_fw_ver", ver)
+            prop_set("persist.vendor.connsys.patch.version", ver[-14:])
+            prop_set("persist.vendor.connsys.wifi_fw_ver", ver[-14:])
+    prop_set("vendor.connsys.launcher.ready", "yes" if result["ok"] else "no")
+
+
+threading.Thread(target=pwr_on_conn, name="pwr_on_conn", daemon=True).start()
+
+poller = select.poll()
+poller.register(fd, select.POLLIN)
+while True:
+    for _, ev in poller.poll():
+        if not ev & select.POLLIN:
+            continue
+        cmd = os.read(fd, 255).split(b"\0")[0].decode(errors="replace")
+        if cmd.startswith("srh_rom_patch"):
+            r = cmd_srh_rom_patch()
+        elif cmd.startswith("srh_patch"):
+            r = cmd_srh_patch()
+        else:
+            r = 1
+        resp = "ok" if r == 0 else ("cmd not found" if r == 1 else "resp_%d" % r)
+        log("cmd(%s) resp(%s)" % (cmd, resp))
+        os.write(fd, resp.encode())

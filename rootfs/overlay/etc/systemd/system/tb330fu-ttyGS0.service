@@ -1,0 +1,18 @@
+[Unit]
+Description=TB330FU USB serial login console on ttyGS0 (CDC-ACM function of the USB gadget)
+After=tb330fu-devd.service
+
+[Service]
+Environment=TERM=vt220
+ExecStartPre=/bin/sh -c 'i=0; while [ ! -c /dev/ttyGS0 ] && [ $i -lt 150 ]; do i=$((i+1)); sleep 0.2; done; [ -c /dev/ttyGS0 ]'
+ExecStart=-/sbin/agetty -o '-p -- \\u' --keep-baud 115200,57600,38400,9600 ttyGS0 $TERM
+Type=idle
+Restart=always
+RestartSec=2
+UtmpIdentifier=ttyGS0
+TTYPath=/dev/ttyGS0
+TTYReset=yes
+TTYVHangup=yes
+KillMode=process
+IgnoreSIGPIPE=no
+SendSIGHUP=yes

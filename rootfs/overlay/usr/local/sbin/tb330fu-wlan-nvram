@@ -1,0 +1,12 @@
+#!/usr/bin/python3
+"""Replacement for the NVRAM part of Android's wlan_assistant: hand the factory Wi-Fi NVRAM to the wlan driver through /dev/wmtWifi ("WR-BUF:NVRAM" + data).
+The driver registers its callbacks with WMT only after it has the NVRAM (without it `echo 1 > /dev/wmtWifi` fails: "null pointer mtk_wcn_wlan_probe")."""
+import os
+import sys
+
+path = sys.argv[1] if len(sys.argv) > 1 else "/var/lib/tb330fu/nvram/WIFI"
+data = open(path, "rb").read()
+fd = os.open("/dev/wmtWifi", os.O_WRONLY)
+n = os.write(fd, b"WR-BUF:NVRAM" + data)
+os.close(fd)
+print("wlan nvram: wrote %d bytes (%d of NVRAM)" % (n, len(data)))

@@ -1,0 +1,14 @@
+[Unit]
+Description=TB330FU grow the root filesystem to fill its partition (online resize, no-op once grown)
+After=tb330fu-devd.service
+ConditionPathIsReadWrite=/
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tb330fu/growfs
+RemainAfterExit=yes
+TimeoutStartSec=600
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

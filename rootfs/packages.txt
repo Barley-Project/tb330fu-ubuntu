@@ -1,0 +1,70 @@
+# Packages of the GNOME root filesystem (Ubuntu 24.04 "noble", arm64). One per line; installed with --no-install-recommends.
+# base system
+ubuntu-minimal
+systemd
+systemd-sysv
+systemd-resolved
+udev
+kmod
+dbus
+sudo
+openssh-server
+iproute2
+iputils-ping
+net-tools
+ethtool
+iw
+rfkill
+pciutils
+usbutils
+curl
+wget
+less
+nano
+file
+e2fsprogs
+busybox-static
+tzdata
+locales
+fake-hwclock
+ca-certificates
+# desktop
+gnome-shell
+gnome-session
+gnome-settings-daemon
+gnome-control-center
+gnome-keyring
+nautilus
+gnome-console
+gnome-text-editor
+gnome-system-monitor
+gnome-calculator
+gnome-clocks
+loupe
+epiphany-browser
+adwaita-icon-theme
+xwayland
+python3-gi
+gir1.2-gtk-4.0
+# graphics (Mesa: Panfrost through the kmsro path of the simpledrm module, llvmpipe as the fallback)
+mesa-utils
+mesa-vulkan-drivers
+libinput-tools
+# network, Bluetooth, audio stack (no sound card driver yet, the daemons still run)
+network-manager
+network-manager-gnome
+wpasupplicant
+wireless-regdb
+bluez
+bluez-obexd
+libspa-0.2-bluetooth
+pipewire-audio
+wireplumber
+# Chinese UI and input (optional: remove these lines for an English system)
+language-pack-zh-hans
+language-pack-gnome-zh-hans
+fonts-noto-cjk
+fonts-noto-color-emoji
+fonts-noto-core
+ibus
+ibus-libpinyin

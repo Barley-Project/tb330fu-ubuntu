@@ -1,0 +1,18 @@
+# CONNSYS / Wi-Fi / Bluetooth modules (vendor_dlkm), see conn-order.txt and conn-order-bt.txt for the load order
+pmic_lbat_service
+pmic_lvsys_notify
+mtk_low_battery_throttling
+connadp
+btif_drv
+conn_md_drv
+emimpu
+wmt_drv
+wmt_chrdev_wifi
+rfkill
+cfg80211
+wlan_drv_gen4m_6768
+bt_drv_connac1x
+bluetooth
+btbcm
+btqca
+hci_uart

@@ -1,0 +1,7 @@
+[Unit]
+Description=TB330FU WMT launcher (MediaTek connectivity firmware loader daemon, replaces /vendor/bin/wmt_launcher)
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/sbin/tb330fu-wmt-launcher
+Restart=no

@@ -1,0 +1,4 @@
+# The Himax HX83102J touchscreen is read by tb330fu-touchd (EVIOCGRAB) and re-emitted as a clean uinput touchscreen; hide the raw device from libinput/mutter
+# (its own seat that nobody assigns): as seen by libinput it is "keyboard pointer touch", which keeps mutter's touch-mode off (no automatic on-screen keyboard)
+# and shows a mouse cursor.
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="himax-touchscreen", ENV{ID_SEAT}="seat-tb330fu-raw", ENV{ID_INPUT_MOUSE}="", ENV{ID_INPUT_KEY}="", ENV{ID_INPUT_KEYBOARD}=""

@@ -1,0 +1,17 @@
+#!/bin/sh
+# One-shot health summary of the tablet for the remote debug loop (run as root for everything: sudo tb330fu-status)
+echo "== $(uname -a)"
+uptime
+echo "== boot: $(cat /proc/cmdline | tr ' ' '\n' | grep -E '^(root|rdinit|bootopt)=' | tr '\n' ' ')"
+echo "== usb role: $(for r in /sys/class/usb_role/*; do [ -e "$r" ] && printf '%s=%s ' "$(basename "$r")" "$(cat "$r/role" 2>/dev/null)"; done) udc: $(cat /sys/kernel/config/usb_gadget/tb330fu_ncm/UDC 2>/dev/null)"
+ip -br addr 2>/dev/null
+echo "== battery / charger"
+for p in /sys/class/power_supply/*; do [ -e "$p" ] && printf '%s: type=%s status=%s capacity=%s online=%s\n' "$(basename "$p")" "$(cat "$p/type" 2>/dev/null)" "$(cat "$p/status" 2>/dev/null)" "$(cat "$p/capacity" 2>/dev/null)" "$(cat "$p/online" 2>/dev/null)"; done
+echo "== units: session=$(systemctl is-active tb330fu-session.service 2>&1) otg=$(systemctl is-active tb330fu-otg.service 2>&1) growfs=$(systemctl is-active tb330fu-growfs.service 2>&1) ssh=$(systemctl is-active ssh.service 2>&1) networkd=$(systemctl is-active systemd-networkd.service 2>&1)"
+systemctl --failed --no-legend --no-pager 2>/dev/null | head -20
+echo "== root filesystem"; df -h / | tail -1
+echo "== drm"; ls -l /dev/dri 2>&1 | tail -n +2
+for n in /sys/class/drm/card*/device/driver /sys/class/drm/renderD*/device/driver; do [ -e "$n" ] && printf '%s -> %s\n' "$n" "$(readlink "$n")"; done
+echo "== loaded tb330fu/vendor modules (count): $(lsmod | wc -l)"; lsmod | grep -i -E 'tb330fu|simpledrm|panfrost|gpu_sched|mali|wlan|wmt|bt_|mtk_disp|mediatek_drm' | head -20
+echo "== sessions"; loginctl list-sessions --no-legend 2>/dev/null
+echo "== last kernel messages"; dmesg 2>/dev/null | tail -n 25

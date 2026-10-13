@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+for f in /etc/ssh/ssh_host_*_key; do
+    [ -s "$f" ] && exit 0
+done
+exec /usr/bin/ssh-keygen -A

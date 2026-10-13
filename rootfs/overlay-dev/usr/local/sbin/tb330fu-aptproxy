@@ -1,0 +1,3 @@
+#!/bin/bash
+# apt Proxy-Auto-Detect: use the PC's proxy through the ssh reverse tunnel (127.0.0.1:17897) when it is up, otherwise connect directly
+if (exec 3<>/dev/tcp/127.0.0.1/17897) 2>/dev/null; then echo http://127.0.0.1:17897; else echo DIRECT; fi

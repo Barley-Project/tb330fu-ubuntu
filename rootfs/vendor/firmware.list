@@ -1,0 +1,27 @@
+# firmware files the port needs from vendor/firmware of the ROW074 firmware (Wi-Fi/BT/CONNSYS, FM, touch panels, audio amplifier, camera)
+aw883xx_acf.bin
+awinic_params.bin
+BT_FW.cfg
+connfem.cfg
+fm_cust.cfg
+fs1801.fsm
+gt1151_default_firmware2.img
+Himax_firmware_boe.bin
+Himax_mpfw_boe.bin
+hx_criteria_Barley_boe.csv
+lib3a.ccu
+mt6631_fm_v1_coeff.bin
+mt6631_fm_v1_patch.bin
+novatek_ts_fw.bin
+novatek_ts_mp.bin
+novatek_ts_tcl_fw.bin
+novatek_ts_tcl_mp.bin
+remoteproc_scp
+soc1_0_patch_mcu_1a_1_hdr.bin
+soc1_0_ram_bt_1a_1_hdr.bin
+soc1_0_ram_mcu_1a_1_hdr.bin
+soc1_0_ram_wifi_1a_1_hdr.bin
+txpowerctrl.cfg
+WIFI_RAM_CODE_soc1_0_1a_1.bin
+wifi.cfg
+WMT_SOC.cfg

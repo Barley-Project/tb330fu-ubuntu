@@ -1,0 +1,12 @@
+[Unit]
+Description=TB330FU power key policy (short press: screen off/on, long press: power menu)
+After=tb330fu-keys.service tb330fu-devd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/sbin/tb330fu-keysd
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,30 @@
+#!/bin/sh
+# TB330FU: grow the root filesystem to the size of its partition.  The rootfs is flashed as a 4 GiB ext4 into a ~100 GiB userdata partition;
+# this runs online (resize2fs -> EXT4_IOC_RESIZE_FS) at every boot and does nothing once the filesystem already fills the device.
+log() { echo "TB330FU growfs: $*" > /dev/kmsg 2>/dev/null; echo "growfs: $*"; }
+mm="$(findmnt -n -o MAJ:MIN /)"
+dev="$(findmnt -n -o SOURCE /)"
+if [ ! -b "$dev" ]; then
+    maj="${mm%%:*}"; min="${mm##*:}"
+    dev=/run/tb330fu-rootdev
+    rm -f "$dev"
+    mknod "$dev" b "$maj" "$min" || { log "cannot create a node for $mm"; exit 0; }
+fi
+bs="$(dumpe2fs -h "$dev" 2>/dev/null | awk -F: '/^Block size:/{gsub(/ /,"",$2); print $2}')"
+blocks="$(dumpe2fs -h "$dev" 2>/dev/null | awk -F: '/^Block count:/{gsub(/ /,"",$2); print $2}')"
+devbytes="$(blockdev --getsize64 "$dev" 2>/dev/null)"
+if [ -z "$bs" ] || [ -z "$blocks" ] || [ -z "$devbytes" ]; then
+    log "cannot read the filesystem or device size of $dev (root $mm), not resizing"
+    exit 0
+fi
+fsbytes=$((bs * blocks))
+log "$dev: filesystem $((fsbytes / 1048576)) MiB, device $((devbytes / 1048576)) MiB"
+if [ $((devbytes - fsbytes)) -lt 134217728 ]; then
+    log "filesystem already fills the device, nothing to do"
+    exit 0
+fi
+log "growing $dev online to fill the device"
+out="$(resize2fs "$dev" 2>&1)"
+rc=$?
+log "resize2fs rc=$rc: $(echo "$out" | tr '\n' ' ')"
+exit 0

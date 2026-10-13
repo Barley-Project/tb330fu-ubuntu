@@ -1,0 +1,22 @@
+# TB330FU: the USB NCM gadget interface.  The address is also set by /usr/libexec/tb330fu-usb-gadget; networkd adds a DHCP server so that a
+# host that cannot be configured by hand (Windows without administrator rights) automatically gets 192.168.7.1/24 on its end of the link.
+# IPv6 link-local stays on as a second way in that needs no DHCP at all: the gadget MAC is fixed (02:00:00:00:00:01) so the tablet is always
+# fe80::ff:fe00:1 on this link (ssh ubuntu@fe80::ff:fe00:1%<interface index of the NCM adapter on the PC>).
+[Match]
+Name=usb0
+
+[Network]
+Address=192.168.7.2/24
+DHCPServer=yes
+LinkLocalAddressing=ipv6
+IPv6LinkLocalAddressGenerationMode=eui64
+IPv6AcceptRA=no
+ConfigureWithoutCarrier=no
+
+[DHCPServer]
+PoolOffset=1
+PoolSize=1
+EmitDNS=no
+EmitRouter=no
+EmitNTP=no
+EmitTimezone=no

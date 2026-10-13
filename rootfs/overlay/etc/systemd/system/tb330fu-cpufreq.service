@@ -1,0 +1,13 @@
+[Unit]
+Description=TB330FU CPU frequency scaling (vendor cpufreq_v2 stack: SSPM + CPU_DVFS)
+After=tb330fu-devd.service local-fs.target
+Before=tb330fu-gpu.service tb330fu-conn.service tb330fu-gnome.service graphical.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh /usr/libexec/tb330fu-cpufreq.sh
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

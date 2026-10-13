@@ -1,0 +1,3 @@
+# hardware key drivers: PMIC power/volume-down keys and the SoC keypad (volume up)
+mtk-pmic-keys
+mtk-kpd

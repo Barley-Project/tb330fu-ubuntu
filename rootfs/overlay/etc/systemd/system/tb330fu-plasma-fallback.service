@@ -1,0 +1,6 @@
+[Unit]
+Description=TB330FU: the GNOME session failed three times, fall back to the Plasma session
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'mkdir -p /var/lib/tb330fu; : > /var/lib/tb330fu/use-plasma; systemctl start --no-block tb330fu-session.service'

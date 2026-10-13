@@ -1,0 +1,140 @@
+#!/usr/bin/python3
+"""Bluetooth bridge for the MT6768 SoC-integrated combo chip (soc1_0).
+
+The vendor driver bt_drv_connac1x.ko exposes the controller as the character device /dev/stpbt (HCI H4 packets: one packet per read/write, packet type
+byte first); there is no HCI_VHCI in the gda kernel.  This daemon opens /dev/stpbt (which powers the BT function and loads its firmware), creates a pty pair,
+attaches the BlueZ H4 line discipline to the slave side (btattach -B <slave> -P h4 -> hci0) and copies complete H4 packets in both directions.
+
+Controller quirks handled here (btmon traces):
+  * the firmware advertises "Synchronization Train" but answers Read Synchronization Train Parameters (0x0c77) with "Unknown HCI Command"; the kernel's HCI init
+    then fails with -EBADRQC (hciconfig hci0 up: "Invalid request code (56)").  The command is answered locally with an all-zero Command Complete.
+  * the Bluetooth device address of the firmware is 00:00:46:76:63:01.  The factory address (first 6 bytes of nvdata APCFG/APRDEB/BT_Addr, copied to
+    /var/lib/tb330fu/nvram/BT_Addr) is written with the MediaTek vendor command 0xFC1A right after every HCI Reset, before the Reset completion reaches the host.
+Needs: bluetooth.ko + hci_uart.ko loaded (tb330fu-conn.sh), bluez (btattach, bluetoothd).
+"""
+import os
+import select
+import signal
+import subprocess
+import sys
+import time
+import tty
+
+BDADDR_FILE = "/var/lib/tb330fu/nvram/BT_Addr"
+OP_RESET, OP_SYNC_TRAIN, OP_SET_BDADDR = 0x0c03, 0x0c77, 0xfc1a
+
+
+def h4_total(buf):
+    """total length of the H4 packet at the start of buf, or None while the header is incomplete; -1 for an unknown packet type"""
+    t = buf[0]
+    if t in (0x01, 0x03):          # command / SCO: type, 2 bytes opcode|handle, 1 byte length
+        return 4 + buf[3] if len(buf) >= 4 else None
+    if t == 0x02:                  # ACL: type, handle(2), length(2)
+        return 5 + (buf[3] | buf[4] << 8) if len(buf) >= 5 else None
+    if t == 0x04:                  # event: type, event code, length(1)
+        return 3 + buf[2] if len(buf) >= 3 else None
+    if t == 0x05:                  # ISO: type, handle(2), length(14 bit)
+        return 5 + ((buf[3] | buf[4] << 8) & 0x3fff) if len(buf) >= 5 else None
+    return -1
+
+
+class Framer:
+    def __init__(self):
+        self.buf = bytearray()
+
+    def feed(self, data):
+        self.buf += data
+        out = []
+        while self.buf:
+            total = h4_total(self.buf)
+            if total == -1:
+                del self.buf[0]    # lost sync: an unknown type cannot be framed, drop the byte
+                continue
+            if total is None or len(self.buf) < total:
+                break
+            out.append(bytes(self.buf[:total]))
+            del self.buf[:total]
+        return out
+
+
+def log(*a):
+    print("tb330fu-btd:", *a, flush=True)
+
+
+def event_opcode(pkt):
+    """opcode of a Command Complete / Command Status event, else None"""
+    if pkt[0] == 0x04 and pkt[1] == 0x0e and len(pkt) >= 6:
+        return pkt[4] | pkt[5] << 8
+    if pkt[0] == 0x04 and pkt[1] == 0x0f and len(pkt) >= 7:
+        return pkt[5] | pkt[6] << 8
+    return None
+
+
+bdaddr = None
+try:
+    raw = open(BDADDR_FILE, "rb").read(6)
+    if len(raw) == 6 and raw not in (bytes(6), b"\xff" * 6):
+        bdaddr = bytes(reversed(raw))      # the file holds the address in display order, HCI wants it little endian
+        log("factory BD address", ":".join("%02x" % b for b in raw))
+except OSError as e:
+    log("no factory BD address (%s), the firmware default stays" % e)
+
+bt = os.open("/dev/stpbt", os.O_RDWR | os.O_NOCTTY)
+log("opened /dev/stpbt")
+master, slave = os.openpty()
+tty.setraw(master)
+tty.setraw(slave)
+slave_name = os.ttyname(slave)
+log("pty slave", slave_name)
+att = subprocess.Popen(["/usr/bin/btattach", "-B", slave_name, "-P", "h4"])
+
+
+def stop(*_):
+    att.terminate()
+    sys.exit(0)
+
+
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGINT, stop)
+host_framer = Framer()
+ctl_framer = Framer()
+held = None           # Reset completion held back while the BD address is being written
+held_until = 0.0
+while True:
+    timeout = 1.0
+    if held is not None:
+        timeout = max(0.0, held_until - time.time())
+    r, _, _ = select.select([bt, master], [], [], timeout)
+    if att.poll() is not None:
+        sys.exit("btattach exited with %s" % att.returncode)
+    if held is not None and time.time() >= held_until:
+        log("no reply to the vendor BD address command, continuing")
+        os.write(master, held)
+        held = None
+    if bt in r:
+        data = os.read(bt, 4096)
+        if not data:
+            sys.exit("/dev/stpbt closed")
+        for pkt in ctl_framer.feed(data):
+            op = event_opcode(pkt)
+            if held is None and bdaddr and op == OP_RESET and pkt[1] == 0x0e:
+                held = pkt
+                held_until = time.time() + 1.0
+                os.write(bt, bytes([0x01, OP_SET_BDADDR & 0xff, OP_SET_BDADDR >> 8, 6]) + bdaddr)
+            elif held is not None and op == OP_SET_BDADDR:
+                log("BD address written, status %s" % ("ok" if pkt[1] == 0x0f and pkt[3] == 0 or pkt[1] == 0x0e and pkt[6] == 0 else "failed"))
+                os.write(master, held)
+                held = None
+            else:
+                os.write(master, pkt)
+    if master in r:
+        try:
+            data = os.read(master, 4096)
+        except OSError:
+            continue
+        for pkt in host_framer.feed(data):
+            if pkt[0] == 0x01 and (pkt[1] | pkt[2] << 8) == OP_SYNC_TRAIN:
+                # Command Complete: ncmd 1, opcode, status 0 + interval(2) + timeout(4) + service data(1)
+                os.write(master, bytes([0x04, 0x0e, 0x0b, 0x01, OP_SYNC_TRAIN & 0xff, OP_SYNC_TRAIN >> 8]) + bytes(8))
+            else:
+                os.write(bt, pkt)

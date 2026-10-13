@@ -1,0 +1,11 @@
+[Unit]
+Description=TB330FU USB OTG / device-mode bring-up (vendor Type-C / charger / role-switch modules staged by stage1; rootfs copy, overrides the stage1 RAM unit)
+After=tb330fu-devd.service tb330fu-usb-gadget.service
+
+[Service]
+Type=simple
+ExecStart=/bin/sh /usr/libexec/tb330fu-otg.sh
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

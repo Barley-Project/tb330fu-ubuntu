@@ -1,0 +1,81 @@
+#!/usr/bin/python3
+"""Coarse thermal protection for the CPUs while there is no SoC temperature sensor driver: the only temperature the kernel offers is the battery
+thermistor (zone "battery", milli-degrees). The battery follows the heat of the device with a delay of minutes, so this only guards against sustained heat
+soaking: the maximum frequency of both CPU clusters is lowered in steps when the battery gets warm and raised again when it cools down (hysteresis).
+
+  battery temperature    A55 cluster (policy0)   A75 cluster (policy6)
+  below 42 C             1800 MHz                2000 MHz   (the hardware maximum)
+  42 .. 45 C             1500 MHz                1710 MHz
+  45 .. 48 C             1100 MHz                1177 MHz   (about what the bootloader left)
+  48 .. 52 C              774 MHz                 850 MHz
+  52 C and above          500 MHz                 850 MHz
+"""
+import glob
+import os
+import sys
+import time
+
+POLL_S = 5
+HYST_C = 1.5
+# (enter threshold in C, policy0 max kHz, policy6 max kHz)
+LEVELS = [(0, None, None), (42, 1500000, 1710000), (45, 1100000, 1176000), (48, 774000, 850000), (52, 500000, 850000)]
+CPUFREQ = "/sys/devices/system/cpu/cpufreq/policy%d/scaling_max_freq"
+PPM_TEMP = "/sys/module/tb330fu_ppmtemp/parameters/cpu_temp_mc"
+
+
+def log(*a):
+    print("tb330fu-thermalguard:", *a, flush=True)
+
+
+def battery_temp_c():
+    for z in glob.glob("/sys/class/thermal/thermal_zone*"):
+        try:
+            if open(z + "/type").read().strip() == "battery":
+                return int(open(z + "/temp").read()) / 1000.0
+        except (OSError, ValueError):
+            pass
+    return None
+
+
+def hw_max(policy):
+    return int(open("/sys/devices/system/cpu/cpufreq/policy%d/cpuinfo_max_freq" % policy).read())
+
+
+def apply(level):
+    for policy, idx in ((0, 1), (6, 2)):
+        f = LEVELS[level][idx] or hw_max(policy)
+        with open(CPUFREQ % policy, "w") as fh:
+            fh.write(str(f))
+
+
+def main():
+    while not os.path.exists(CPUFREQ % 0):
+        time.sleep(5)
+    level = 0
+    apply(0)
+    log("started, battery %.1f C" % (battery_temp_c() or -1))
+    while True:
+        t = battery_temp_c()
+        if t is not None:
+            try:  # the vendor PPM wants a CPU temperature: battery plus a typical offset (module tb330fu_ppmtemp)
+                with open(PPM_TEMP, "w") as fh:
+                    fh.write(str(int((t + 8.0) * 1000)))
+            except OSError:
+                pass
+            new = level
+            while new + 1 < len(LEVELS) and t >= LEVELS[new + 1][0]:
+                new += 1
+            while new > 0 and t < LEVELS[new][0] - HYST_C:
+                new -= 1
+            if new != level:
+                log("battery %.1f C: level %d -> %d (A55 max %s, A75 max %s kHz)" % (t, level, new, LEVELS[new][1] or "hw", LEVELS[new][2] or "hw"))
+                level = new
+                apply(level)
+        time.sleep(POLL_S)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(0)

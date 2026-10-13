@@ -1,0 +1,13 @@
+[Unit]
+Description=TB330FU connectivity bring-up (MT6768 CONNSYS: Wi-Fi + Bluetooth)
+After=tb330fu-devd.service tb330fu-gpu.service local-fs.target NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh /usr/libexec/tb330fu-conn.sh
+TimeoutStartSec=240
+
+[Install]
+WantedBy=multi-user.target

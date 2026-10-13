@@ -1,0 +1,13 @@
+pmic_lbat_service
+pmic_lvsys_notify
+mtk_low_battery_throttling
+connadp
+btif_drv
+conn_md_drv
+emimpu
+wmt_drv
+wmt_chrdev_wifi
+rfkill
+cfg80211
+wlan_drv_gen4m_6768
+bt_drv_connac1x

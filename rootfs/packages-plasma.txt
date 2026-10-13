@@ -1,0 +1,6 @@
+# Optional fallback session (TB_WITH_PLASMA=1): KDE Plasma on Wayland. tb330fu-gnome.service falls back to it (via /var/lib/tb330fu/use-plasma) when the
+# GNOME session failed three times. stage1 installs the RAM-only unit tb330fu-session.service for it when these packages are present.
+kde-plasma-desktop
+plasma-workspace-wayland
+kwin-wayland
+sddm

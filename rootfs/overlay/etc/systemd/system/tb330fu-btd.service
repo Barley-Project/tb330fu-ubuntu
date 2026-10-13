@@ -1,0 +1,11 @@
+[Unit]
+Description=TB330FU Bluetooth bridge (/dev/stpbt <-> hci0)
+After=tb330fu-conn.service bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/sbin/tb330fu-btd
+Restart=on-failure
+RestartSec=5
+# bluetooth.service has ConditionPathIsDirectory=/sys/class/bluetooth: start it once hci0 exists
+ExecStartPost=/bin/sh -c 'i=0; while [ ! -d /sys/class/bluetooth/hci0 ] && [ $i -lt 40 ]; do i=$((i+1)); sleep 0.5; done; systemctl start --no-block bluetooth.service'

@@ -1,0 +1,4 @@
+bluetooth
+btbcm
+btqca
+hci_uart
