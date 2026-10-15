@@ -7,7 +7,7 @@
 
 * Bootloader 已解锁，引导链是 **CN `lk` + CN `dtbo` + ROW `tee` + CN `gz`，其余为 ROW074**（作者在 [Barley-Project/lk_patch](https://github.com/Barley-Project/lk_patch)、`mtkclient-tb330fu-carbonara` 里做的研究与工具）；
   `vbmeta` 已被绕过（本项目不刷 `vbmeta`，也不刷 `lk/tee/gz/dtbo`）。
-* `boot` 分区里是官方 ROW074 的 **`boot-debug.img`**（gda 内核）。`vendor_boot` 必须与它配对：**gda 的 vendor_boot 绝不能和 g94 的标准 `boot.img` 混用**。
+* `boot` 分区里是官方 ROW074 的 **`boot-debug.img`**（gda 内核），或本仓库自编的内核（见下面“自编内核”，版本字符串与导出 CRC 和 gda 相同）。`vendor_boot` 必须与它配对：**gda 的 vendor_boot 绝不能和 g94 的标准 `boot.img` 混用**。
 * 分区布局（作者设备的 GPT 备份）：`vendor_boot_a/b` 各 64 MiB（镜像已补零到 64 MiB）、`userdata` = p52（约 110 GB）、`expdb` = p6、`nvdata`、`spmfw`、`sspm` 等保持原样。
 
 ## 刷机
@@ -25,6 +25,17 @@ fastboot reboot
 首次启动时 `tb330fu-growfs` 会把 ext4 在线扩到整个 userdata。root 的选择靠 **ext4 标签 + UUID + 容量**（`stage1.conf`：`TB_ROOT_LABEL/TB_ROOT_UUID`，两个构建器必须用同一组值；
 `make-image.sh` 会把 UUID 写进文件系统，不是随机的）。
 
+## 自编内核（`boot`，Waydroid 需要）
+
+`scripts/kernel/build-boot.sh` 把固件里 `boot-debug.img` 的内核换成自编的 `Image`（头版本 4、gzip 内核、原 ramdisk、补零到 32 MiB）；`--self-test` 先证明“把原内核原样重打包 = 原镜像”（AVB 页脚除外，设备跑在绕过校验的状态下）。只刷当前槽的 `boot`：
+
+```bash
+fastboot flash boot_a dist/boot.img          # 回退：fastboot flash boot_a <你自己固件里的 boot-debug.img>
+```
+
+刷之前先确认：能进 fastboot、手上有原来的 `boot-debug.img`、`crc-compare.py` 显示没有改变的导出 CRC。**这些都满足也不保证能启动**：加了 SukiSU‑Ultra 的那个内核编译通过、CRC 也一致，刷进去却连不上平板（原因没查），靠 fastboot 刷回原镜像才恢复。
+实测启动失败后 `current-slot` 仍然是 a，不会自动切到 b 槽。
+
 ## 启动后
 
 * 约 40–60 秒：桌面起来；USB 线接 PC 后得到 `192.168.7.2`（见 [11-dev-loop.md](11-dev-loop.md)）。
@@ -36,6 +47,7 @@ fastboot reboot
 | 情况 | 办法 |
 |---|---|
 | 系统起不来，但还能进 fastboot（音量/按键组合，或 `tb330fu-fastboot`） | 刷回备份的原厂 `vendor_boot_a`（或上一个能用的镜像） |
+| 刷了新的 `boot` 之后起不来 | fastboot 把原来的 `boot-debug.img` 刷回同一个槽（`fastboot flash boot_a …`）；别指望自动回退到另一个槽 |
 | 某个驱动让内核 panic | 每个高风险步骤都有崩溃保护：下次启动自动跳过一次。也可以在平板上 `touch /var/lib/tb330fu/no-gpu`（`no-conn`、`no-cpufreq`、`no-keys`、`no-otg`）永久跳过 |
 | `tb330fu-gpu` 失败后没有显示驱动 | 脚本会回退到 `simpledrm.ko.good`；手工：`insmod /usr/lib/tb330fu/modules/simpledrm.ko.good`，再启动会话 |
 | GNOME 反复起不来 | 三次失败后自动切到 Plasma（若已安装）；或 `touch /var/lib/tb330fu/use-plasma` |

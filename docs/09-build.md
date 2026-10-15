@@ -22,15 +22,32 @@ scripts/kernel/prepare-kernel-tree.sh    # 用 g94 的配置 + 恢复出的 Modu
 
 `extract_kernel_data.py` 已对 `boot.img`/`boot-debug.img` 验证：导出表、`System.map`、`Module.symvers` 与此前人工恢复的结果逐字节一致。
 
+## 1b. 自编内核（可选，Waydroid 需要）
+
+```bash
+scripts/kernel/build-kernel.sh baseline                                 # 不带片段：应复现 gda 内核的导出表（复现性测试）
+scripts/kernel/build-kernel.sh tb330fu kernel-config/tb330fu.config     # 带片段；输出在 $TB_WORK/kernel/build-tb330fu
+python3 scripts/kernel/crc-compare.py "$TB_WORK/kernel/build-tb330fu" "$TB_KDATA/boot-debug/Module.symvers" --used "$TB_MODOUT"
+scripts/kernel/build-boot.sh --self-test                                # 原内核原样重打包 = 原 boot-debug.img
+scripts/kernel/build-boot.sh "$TB_WORK/kernel/build-tb330fu/arch/arm64/boot/Image"    # -> $TB_DIST/boot.img（32 MiB）
+scripts/kernel/stage-modules.sh tb330fu                                 # -> $TB_DIST/kernel-modules.tar（树内模块，build-rootfs.sh 自动解开）
+```
+
+`build-kernel.sh` 用 g94 的源码和 gda 的配置（`CONFIG_LOCALVERSION` 改成让版本字符串与 gda 完全相同，已有模块和厂商模块的 vermagic 照常匹配），再用内核自带的 `merge_config.sh` 合并片段并 `olddefconfig`。
+**片段的原则**：不能改变任何厂商模块用到的结构体布局。`crc-compare.py` 事后比较导出符号的 CRC，并列出会因此被内核拒绝加载的模块（`--used` 可重复，给出模块目录，例如 `collect-vendor-files.sh` 的输出）。
+`kernel-config/tb330fu.config` 里写明了哪些选项因为会改 CRC 而不能开：`CGROUP_DEVICE`/`CGROUP_PIDS`（约 6000 个导出符号的 CRC 变化）、`SYSVIPC`（`task_struct`）、关闭 GKI 模块保护（`struct module`）。
+
+坑：接入外部驱动时，新的 Kconfig 符号如果 `default y`，`build-kernel.sh` 的 `olddefconfig` 会在合并片段**之前**就把它打开——之后每次构建（包括不带片段的基线）都带上它。接入前先把 `default` 改成 `n`。
+
 ## 2. 内核模块
 
 ```bash
-scripts/build-modules.sh all            # 或 gkiunlock intpol blklog harvest ovl con fb shot peek ppmtemp simpledrm panfrost
+scripts/build-modules.sh all            # 或 gkiunlock intpol blklog harvest ovl con fb shot peek ppmtemp spmstub simpledrm panfrost
 ```
 
 每个模块在“`$TB_BUILD_TMP/<名字>/{kdir,m}`”里对 **g94 Kbuild 目录的副本**编译（原目录不被写入；模块目录与 kdir 并列，`__FILE__` 字符串因此与机器无关），
 `llvm-objcopy --strip-debug`，`patch-vermagic.py` 改成 gda，输出 `$TB_MODOUT/*.ko` 与 `SHA256SUMS`。`simpledrm`/`panfrost` 先由 `patch_*.py` 从内核源码生成（每个替换必须恰好匹配一次，否则中止）。
-`ppmtemp` 需要 `TB_VENDOR_MODULES`（`vendor_dlkm` 的模块目录）来取 `mtk_ppm_v3.ko` 导出符号的 CRC。构建完用 `scripts/verify/verify_ko.py <ko> [已加载的模块…]` 检查。
+`ppmtemp` 需要 `TB_VENDOR_MODULES`（`vendor_dlkm` 的模块目录）来取 `mtk_ppm_v3.ko` 导出符号的 CRC；`spmstub` 同样需要其中的 `snd-soc-mt6768-afe.ko`：它导出的 3 个符号的 CRC 由 `scripts/patch-crc.py`（需要 `pyelftools`）改成这个音频驱动导入时期望的值。构建完用 `scripts/verify/verify_ko.py <ko> [已加载的模块…]` 检查。
 同一台机器、同一路径下重编译得到逐字节相同的结果；换目录名只会改变 GNU build‑id 和个别含路径的字符串。
 
 ## 3. vendor_boot
@@ -50,8 +67,11 @@ vendor-boot/build-vendor-boot.sh        # -> $TB_DIST/vendor_boot.img（64 MiB�
 
 ```
 bootopt=64S3,32N2,64N2 rdinit=/tb330fu-init printk.devkmsg=on log_buf_len=2m cpuidle.off=1 initcall_debug=0 systemd.log_target=kmsg systemd.log_level=info
-irqaffinity=7 systemd.journald.forward_to_kmsg=1 systemd.journald.max_level_kmsg=info ignore_loglevel systemd.mask=systemd-pstore.service
+irqaffinity=7 systemd.journald.forward_to_kmsg=1 systemd.journald.max_level_kmsg=info ignore_loglevel systemd.mask=systemd-pstore.service lsm=bpf
 ```
+
+`lsm=bpf`：GKI 内核把 SELinux 编进去了，没有策略时也处于“已启用”状态（会挂载 selinuxfs）；容器里的安卓 init 会把自己的策略加载进宿主内核，把整个系统切到 SELinux。显式列出 LSM 就让 SELinux 保持未初始化
+（`selinux=0` 不可用：`CONFIG_SECURITY_SELINUX_BOOTPARAM` 没开）。Ubuntu 这边没有任何东西用 SELinux。`tb330fu-waydroid-preflight` 会检查这一点。
 
 ## 4. 根文件系统
 

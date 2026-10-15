@@ -940,6 +940,18 @@ if ! mount_selected_root rw; then
     hold_pid1 "ext4 root mount failed"
 fi
 kmsg "TB330FU EARLY: Ubuntu root mounted"
+# RESCUE (one-shot, does nothing when the layout is fine): a real directory /lib instead of the merged-/usr symlink to usr/lib means that no dynamic program
+# (systemd, bash, ...) can start: the ELF interpreter /lib/ld-linux-aarch64.so.1 is gone.  Move whatever is in /lib into /usr/lib and restore the symlink.
+if [ -d /newroot/lib ] && [ ! -L /newroot/lib ]; then
+    kmsg "TB330FU RESCUE: /lib is a directory (the merged-/usr symlink was replaced), moving its content to /usr/lib and restoring the symlink"
+    bb mkdir -p /newroot/usr/lib
+    if bb cp -a /newroot/lib/. /newroot/usr/lib/ && bb rm -rf /newroot/lib && bb ln -s usr/lib /newroot/lib; then
+        bb sync
+        kmsg "TB330FU RESCUE: /lib -> usr/lib restored"
+    else
+        kmsg "TB330FU RESCUE: the repair FAILED"
+    fi
+fi
 
 [ -e /newroot/sbin/init ] || hold_pid1 "required init path missing: /newroot/sbin/init"
 [ -x /newroot/sbin/init ] || hold_pid1 "/newroot/sbin/init is not executable"

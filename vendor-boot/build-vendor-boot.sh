@@ -24,7 +24,10 @@ CC=${CC:-aarch64-linux-gnu-gcc}
 OUT=$TB_DIST/vendor_boot.img
 W=$TB_STAGE
 OWN_MODULES="tb330fu_ovl tb330fu_con tb330fu_fb simpledrm tb330fu_blklog tb330fu_harvest tb330fu_intpol"
-CMDLINE='bootopt=64S3,32N2,64N2 rdinit=/tb330fu-init printk.devkmsg=on log_buf_len=2m cpuidle.off=1 initcall_debug=0 systemd.log_target=kmsg systemd.log_level=info irqaffinity=7 systemd.journald.forward_to_kmsg=1 systemd.journald.max_level_kmsg=info ignore_loglevel systemd.mask=systemd-pstore.service'
+# lsm=bpf: the GKI kernel has SELinux built in and active without a policy (selinuxfs gets mounted); an Android init inside the Waydroid container could load its
+# policy into the host kernel and switch SELinux on for the whole system.  Naming the LSMs explicitly leaves SELinux uninitialised (selinux=0 is not available:
+# CONFIG_SECURITY_SELINUX_BOOTPARAM is off).  Nothing on the Ubuntu side uses SELinux.
+CMDLINE='bootopt=64S3,32N2,64N2 rdinit=/tb330fu-init printk.devkmsg=on log_buf_len=2m cpuidle.off=1 initcall_debug=0 systemd.log_target=kmsg systemd.log_level=info irqaffinity=7 systemd.journald.forward_to_kmsg=1 systemd.journald.max_level_kmsg=info ignore_loglevel systemd.mask=systemd-pstore.service lsm=bpf'
 
 need python3 lz4 cpio sha256sum "$CC" truncate fdtput file strings xxd gzip
 note "1. pre-flight"
