@@ -1,8 +1,8 @@
 # tb330fu-ubuntu
 
-Ubuntu 24.04 with GNOME (Wayland) on the **Lenovo Tab M11 (TB330FU, MediaTek MT6768 / Helio G85)**, booted from the internal eMMC on top of the stock Android 15
-kernel (`6.6.30-android15-8`, GKI, ROW074 firmware). Display, GPU, touch, on-screen keyboard, Wi-Fi, Bluetooth, battery, USB, hardware keys, backlight and CPU
-frequency scaling work; audio, camera and suspend do not (yet).
+Ubuntu 24.04 with GNOME (Wayland) on the **Lenovo Tab M11 (TB330FU, MediaTek MT6768 / Helio G85)**, booted from the internal eMMC on top of the Android 15
+kernel of the ROW074 firmware (`6.6.30-android15-8`, GKI), optionally rebuilt from source with a few extra options. Display, GPU, touch, on-screen keyboard,
+Wi-Fi, Bluetooth, battery, USB, hardware keys, backlight, CPU frequency scaling and Waydroid work; audio, camera and suspend do not (yet).
 
 > 中文说明: [README.zh-CN.md](README.zh-CN.md) — the detailed documentation in [`docs/`](docs/) is written in Chinese.
 
@@ -19,11 +19,12 @@ ever run on the author's tablet. Read [docs/08-flash-and-recovery.md](docs/08-fl
 | Touch + on-screen keyboard | works (verified with synthetic touch; GNOME OSK appears): uinput proxy gives mutter a clean touchscreen |
 | Wi-Fi / Bluetooth | works: MT6768 CONNSYS brought up from user space (Python replacements of the Android WMT loader/launcher), `wlan0` 5 GHz, `hci0` |
 | Battery, USB (NCM + serial gadget, OTG host) | works |
-| Power / volume keys | works: PMIC + keypad drivers; short press = screen off/on, long press = power menu |
+| Power / volume keys | works: PMIC + keypad drivers; short press = screen off/on, long press = shutdown dialog |
 | CPU frequency scaling | works: vendor `cpufreq_v2` stack (SSPM + `CPU_DVFS`), A55 500–1800 MHz, A75 850–2000 MHz (the bootloader leaves ~1.1 GHz) |
 | GNOME session | works: no display manager, `tb330fu-gnome.service`, optional Plasma fallback |
 | Audio, camera, suspend/resume, sensors, SD card, SoC temperature sensor | not working / not done — see [docs/10-known-issues.md](docs/10-known-issues.md) |
-| Waydroid | **impossible** with this kernel (no PID/IPC/user namespaces, no SYSV IPC) |
+| Own kernel (optional) | works: built from the pinned `kernel/common` commit with the debug kernel's configuration plus [kernel-config/tb330fu.config](kernel-config/tb330fu.config) (PID/IPC/user namespaces, Bluetooth BNEP, squashfs, zram, ...); every exported symbol keeps its CRC, so the vendor modules still load |
+| Waydroid | works with the own kernel: Android 13 (LineageOS 20) in an LXC container, drawn by the Panfrost GPU; no sound (no audio yet). See [docs/12-waydroid.md](docs/12-waydroid.md) |
 
 ## How it fits together
 
@@ -34,18 +35,21 @@ preloader -> LK (CN) -> kernel (ROW074 debug, gda) + vendor_boot  --stage1-->  s
                                 +-- device tree table patched by vendor-boot/make-dtb.sh, INT_POL helper module, boot console, persistent log
 ```
 
-The kernel is the **unmodified vendor kernel**; everything else is built as out-of-tree modules against its headers (compiler: Android clang r510928) and loaded
-over the GKI module protection (see [docs/02-boot-and-kernel.md](docs/02-boot-and-kernel.md)).
+The kernel is either the **unmodified vendor kernel** (`boot-debug.img` of the firmware) or, for Waydroid, the same kernel rebuilt from source with a small
+configuration fragment ([kernel-config/](kernel-config/)); `scripts/kernel/crc-compare.py` checks that no exported symbol changes its CRC, so the vendor modules
+still load. Everything else is built as out-of-tree modules against its headers (compiler: Android clang r510928) and loaded over the GKI module protection
+(see [docs/02-boot-and-kernel.md](docs/02-boot-and-kernel.md)).
 
 ## Repository layout
 
 | path | contents |
 |---|---|
-| `kernel-modules/` | sources of the kernel modules written for this port (`simpledrm` + backlight + scan-out ring, `panfrost` power sequencing, `gkiunlock`, INT_POL helper, boot console, persistent log, debug helpers) |
+| `kernel-config/` | Kconfig fragments for the self-built kernel: `tb330fu.config` (containers, Bluetooth, squashfs, ...); `tb330fu-sukisu.config` is an experiment that does **not** boot |
+| `kernel-modules/` | sources of the kernel modules written for this port (`simpledrm` + backlight + scan-out ring, `panfrost` power sequencing, `gkiunlock`, INT_POL helper, boot console, persistent log, `spmstub` stand-in for the audio driver, debug helpers) |
 | `vendor-boot/` | `stage1.sh`, module lists, device tree patching and the **version-free `vendor_boot` builder** (reproduces the image that is flashed on the tablet byte for byte) |
 | `rootfs/` | overlay (systemd units, scripts, dconf, udev), package list, from-scratch builder, image maker, live-system capture |
-| `scripts/` | kernel preparation (`kernel/`), module build, verification tools (`verify/`: imports, CRCs, kCFI, load simulation), analysis tools (`research/`) |
-| `tools/` | PC side: `tb.sh` remote debug loop (ssh over USB-NCM, screenshot, fastboot), probes and test helpers |
+| `scripts/` | kernel preparation and the kernel / `boot.img` build (`kernel/`), module build, verification tools (`verify/`: imports, CRCs, kCFI, load simulation), analysis tools (`research/`) |
+| `tools/` | PC side: `tb.sh` remote debug loop (ssh over USB-NCM, screenshot, fastboot), the Waydroid image downloader, probes and test helpers |
 | `docs/` | documentation (Chinese) |
 | `third_party/mkbootimg/` | AOSP boot image tools (Apache-2.0), unmodified |
 
@@ -63,6 +67,10 @@ scripts/kernel/prepare-kernel-tree.sh          # Kbuild output directory
 scripts/kernel/fetch-upstream.sh               # NevedomaZverushka (init.c, tb330fu-devd)
 scripts/build-busybox.sh
 scripts/build-modules.sh all                   # kernel modules
+# optional, needed for Waydroid: the kernel rebuilt with kernel-config/tb330fu.config (details: docs/09-build.md, section 1b)
+scripts/kernel/build-kernel.sh tb330fu kernel-config/tb330fu.config
+scripts/kernel/build-boot.sh "$TB_WORK/kernel/build-tb330fu/arch/arm64/boot/Image"    # -> dist/boot.img
+scripts/kernel/stage-modules.sh tb330fu        # -> dist/kernel-modules.tar, unpacked by build-rootfs.sh
 vendor-boot/build-vendor-boot.sh               # -> dist/vendor_boot.img
 rootfs/collect-vendor-files.sh <vendor/firmware> <vendor_dlkm/lib/modules>
 sudo -E rootfs/build-rootfs.sh && rootfs/make-image.sh    # -> dist/rootfs.ext4
@@ -76,7 +84,9 @@ Details, flashing and recovery: [docs/09-build.md](docs/09-build.md), [docs/08-f
 * `build-modules.sh` reproduces the earlier verified module builds (identical apart from the GNU build-id, which depends on the build directory, and two
   modules whose source text changed since). Every module is checked against the debug kernel's export table (imports, CRCs, kCFI type hashes).
 * `rootfs/build-rootfs.sh` has **not** been run end to end; the tablet's image was produced by installing the packages on the running system and capturing it.
-* The `vendor_boot` built from the current sources (new `simpledrm` with backlight) has been checked by the builder's automated tests only, it has not been flashed.
+* The self-built kernel (`kernel-config/tb330fu.config`) and a `vendor_boot` built from the current sources were flashed and run on the author's tablet;
+  `crc-compare.py` found no changed export CRC against the debug kernel. The SukiSU-Ultra variant (`tb330fu-sukisu.config`) builds with the same CRC result but
+  did **not** boot (the tablet was unreachable; restored with fastboot, cause not found).
 
 ## Credits and licenses
 
