@@ -40,7 +40,10 @@ GNOME 的屏幕键盘需要“触摸模式”（没有指针设备）或 `org.gn
 dconf 里 `power-button-action='nothing'`，logind 被 `gsd-media-keys` 的 `handle-power-key` 阻塞型 inhibitor 挡开，因此只有 `tb330fu-keysd` 处理电源键：
 
 * **短按**：熄屏 ↔ 亮屏（`org.gnome.Mutter.DisplayConfig` 的 `PowerSaveMode` 设 3/0；背光由显示驱动跟随，若没跟上就直接写 `bl_power`）。
-* **长按 0.8 秒**（按住时就触发）：先唤醒屏幕，再弹 `tb330fu-powermenu`（GTK4，大按钮：关机 / 重启 / 取消，30 秒自动关闭）。菜单打开时再短按 = 关闭菜单。
+* **长按 0.8 秒**（按住时就触发）：先唤醒屏幕，再向 gnome-session 要**关机对话框**（`org.gnome.SessionManager.Shutdown`，是 gnome-shell 自己的模态对话框：盖在概览和弹出菜单之上，“取消 / 关机”，60 秒不操作自动关机）。重启在快速设置菜单的电源项里。对话框打开期间电源键被忽略——再调一次 `Shutdown` 会**跳过对话框直接关机**（gnome-session 的行为，也是在这里踩过的坑），所以不能用 D‑Bus 的 `Close()` 去“取消”。
+  历史：最早做过自己的 GTK4 三按钮菜单（关机/重启/取消），两个问题让按钮“没反应”：①菜单进程由 root 服务经 `runuser` 起，不在 logind 会话的 scope 里，polkit 当成非活动会话，`systemctl poweroff` 报 `Interactive authentication required`（现在 `50-tb330fu-power.rules` 允许 sudo 组关机/重启，兜底）；②概览或弹出菜单打开时，新窗口只会出现在概览里/第一次点击被弹出菜单吞掉。
+* **插着 USB 线关机会“自己重启”**：关机后 LK 看到充电器，就以**充电模式**（atag boot mode 8，开机日志里是 `TB330FU EARLY: atag boot mode=0x8`）重新启动内核——有充电器时硬件没法真正保持关机。厂商 Wi‑Fi/蓝牙驱动在这个模式下拒绝加载，照普通方式往下启动只会得到一个功能残缺、看起来像重启的系统。
+  所以 stage1 在充电模式下把根以只读挂载，并把 `tb330fu-charger`（`/usr/libexec/`）当 PID 1 启动：熄屏、保持充电，长按电源键 1.5 秒后软重启进正常系统（软重启对 LK 是普通启动）；找不到按键设备或出任何意外都交给正常的 init。**这个程序没有在真实的充电开机上测过。**
 * 没有 GNOME 会话时守护进程什么都不做（logind 默认：短按关机）。按住 ~10 秒由 PMIC 硬件强制关机，与软件无关。
 * 音量键：事件正常到达桌面，`gsd-media-keys` 绑定的是 `XF86AudioRaiseVolume/LowerVolume`；目前没有声卡，所以没有可调的音量。
 * 自动熄屏：GNOME 的 `idle-delay` 现在设成 0（从不），要打开可以在 dconf 里改成秒数——熄屏路径（DPMS → 背光）已经通；唤醒靠电源键（触摸在熄屏时被丢弃）。

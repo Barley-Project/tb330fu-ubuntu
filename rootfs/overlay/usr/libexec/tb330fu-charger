@@ -1,0 +1,139 @@
+#!/usr/bin/python3
+"""Off-mode charging ("the tablet is switched off, a charger is attached").
+
+When the tablet is powered off with a charger attached, MediaTek's LK starts the kernel again in *charger mode* (atag boot mode 8) -- the hardware cannot stay
+off while it is charging.  The vendor Wi-Fi/Bluetooth drivers refuse to load in that mode, so booting the desktop would give a half-working system that looks
+like a restart.  stage1 therefore mounts the root read-only and starts this program as PID 1 (instead of /sbin/init) when /usr/libexec/tb330fu-charger exists.
+
+What it does: the screen goes off, the kernel keeps charging, and a long press of the power key (1.5 s) restarts the tablet into the normal system (a software
+restart is a normal boot for LK, not charger mode).  Anything unexpected (no key device within 60 s, an exception) hands over to the normal init, so a bug here can
+at worst give the old behaviour (desktop without Wi-Fi/Bluetooth).  Not tested on a real charger boot yet -- see docs/10-known-issues.md.
+"""
+import os
+import select
+import stat
+import struct
+import subprocess
+import sys
+import time
+
+KEY_POWER = 116
+LONG_PRESS_S = 1.5
+FMT = "llHHi"
+SZ = struct.calcsize(FMT)
+KEYS_DIR = "/usr/lib/tb330fu/keys"
+BL = "/sys/class/backlight/tb330fu_bl/bl_power"
+
+
+def log(*a):
+    msg = "TB330FU CHARGER: " + " ".join(str(x) for x in a)
+    try:
+        with open("/dev/kmsg", "w") as f:
+            f.write(msg + "\n")
+    except OSError:
+        pass
+    print(msg, flush=True)
+
+
+def run(*cmd):
+    return subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+
+
+def normal_boot(why):
+    """hand over to systemd: the root was mounted read-only for the charger boot"""
+    log("normal boot instead:", why)
+    run("mount", "-o", "remount,rw", "/")
+    os.execv("/sbin/init", ["/sbin/init"])
+
+
+def make_input_nodes():
+    os.makedirs("/dev/input", exist_ok=True)
+    for n in sorted(os.listdir("/sys/class/input")):
+        if n.startswith("event"):
+            try:
+                major, minor = (int(x) for x in open("/sys/class/input/%s/dev" % n).read().strip().split(":"))
+                path = "/dev/input/" + n
+                if not os.path.exists(path):
+                    os.mknod(path, 0o600 | stat.S_IFCHR, os.makedev(major, minor))
+            except (OSError, ValueError):
+                pass
+
+
+def key_device():
+    for n in sorted(os.listdir("/sys/class/input")):
+        if n.startswith("event"):
+            try:
+                if open("/sys/class/input/%s/device/name" % n).read().strip() == "mtk-pmic-keys":
+                    return "/dev/input/" + n
+            except OSError:
+                pass
+    return None
+
+
+def screen(on):
+    try:
+        with open(BL, "w") as f:
+            f.write("0" if on else "4")
+        return True
+    except OSError:
+        return False
+
+
+def main():
+    os.environ["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    log("charger mode, root is read-only")
+    run("mount", "-t", "tmpfs", "tmpfs", "/run")
+    run("mount", "-t", "tmpfs", "tmpfs", "/tmp")
+    for m in ("mtk-pmic-keys", "mtk-kpd"):
+        if not os.path.isdir("/sys/module/" + m.replace("-", "_")):
+            log("insmod", m, "rc", run("insmod", "%s/%s.ko" % (KEYS_DIR, m)))
+    path = None
+    for _ in range(60):
+        make_input_nodes()
+        path = key_device()
+        if path and os.path.exists(path):
+            break
+        path = None
+        time.sleep(1)
+    if path is None:
+        normal_boot("no power key device within 60 s")
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    log("listening on", path, "screen off:", screen(False))
+    pressed_at = None
+    last_beat = time.monotonic()
+    while True:
+        ready, _, _ = select.select([fd], [], [], 1.0)
+        now = time.monotonic()
+        if now - last_beat >= 300:
+            last_beat = now
+            log("charging, waiting for the power key")
+        if pressed_at is not None and now - pressed_at >= LONG_PRESS_S:
+            log("long press: restarting into the normal system")
+            screen(True)
+            os.sync()
+            run("reboot", "-f")
+            time.sleep(10)
+            normal_boot("reboot -f did not restart the system")
+        if not ready:
+            continue
+        try:
+            data = os.read(fd, SZ * 32)
+        except BlockingIOError:
+            continue
+        for i in range(0, len(data) - SZ + 1, SZ):
+            _, _, t, c, v = struct.unpack_from(FMT, data, i)
+            if t == 1 and c == KEY_POWER:
+                if v == 1:
+                    pressed_at = time.monotonic()
+                elif v == 0:
+                    if pressed_at is not None and time.monotonic() - pressed_at < LONG_PRESS_S:
+                        log("short press: nothing to do, hold the key to start the system")
+                    pressed_at = None
+
+
+try:
+    main()
+except SystemExit:
+    raise
+except BaseException as e:  # noqa: BLE001 -- PID 1 must never just exit
+    normal_boot("exception %r" % (e,))

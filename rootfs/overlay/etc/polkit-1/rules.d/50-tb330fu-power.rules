@@ -1,0 +1,13 @@
+// TB330FU: anything that powers the tablet off or restarts it from outside the logind session scope (a root service that runs a command through runuser,
+// an ssh login without a seat, ...) is not counted by polkit as part of the active local session and would ask for an administrator password that
+// nobody can type ("Call to PowerOff failed: Interactive authentication required").  This is a personal single-user tablet: its administrator may power
+// it off or restart it from anywhere, also while another session (e.g. ssh) is open.  Block inhibitors (apt/dpkg running) still apply.
+polkit.addRule(function(action, subject) {
+    if (subject.isInGroup("sudo") &&
+        (action.id == "org.freedesktop.login1.power-off" ||
+         action.id == "org.freedesktop.login1.power-off-multiple-sessions" ||
+         action.id == "org.freedesktop.login1.reboot" ||
+         action.id == "org.freedesktop.login1.reboot-multiple-sessions")) {
+        return polkit.Result.YES;
+    }
+});

@@ -1,13 +1,16 @@
 #!/usr/bin/python3
-"""TB330FU power key policy: short press = screen off / screen on, long press = power menu (power off / restart / cancel), like any tablet.
+"""TB330FU power key policy: short press = screen off / screen on, long press = the "Power Off" dialog of GNOME, like any tablet.
 
 The power key is KEY_POWER of the PMIC key driver (device "mtk-pmic-keys"). GNOME's own power-button-action is set to 'nothing' (dconf), logind is kept away
 from the key by the inhibitor that gsd-media-keys holds, so this daemon is the only one that reacts.
 
   short press   screen on  -> off: mutter PowerSaveMode = 3 (the CRTC is disabled, simpledrm switches the backlight off, tb330fu-touchd drops touches)
                 screen off -> on : PowerSaveMode = 0 (the first frame switches the backlight on again)
-  long press    (>= LONG_PRESS_S, fired while the key is still held) wakes the screen and shows tb330fu-powermenu in the GNOME session
-  menu open     a short press closes it
+  long press    (>= LONG_PRESS_S, fired while the key is still held) wakes the screen and asks gnome-session for the shutdown dialog (a gnome-shell modal
+                dialog: above the overview and popup menus, "cancel" / "power off", powers off by itself after 60 s). The method call only returns when
+                the dialog is resolved; a second Shutdown call while it is open would skip the dialog and power off at once, so there is never a second one.
+                (Restart: the power entry of the quick settings menu.)
+  dialog open   key presses are ignored
 
 Without a GNOME session the daemon does nothing (logind's default then applies: short press = power off).
 Holding the key for ~10 s is handled by the PMIC itself (hard power off), independent of this daemon.
@@ -106,16 +109,20 @@ def menu_open():
 
 def show_menu():
     global menu
+    if menu_open():
+        return
     if screen_is_off():
         set_screen(True)
-    menu = subprocess.Popen(["runuser", "-u", USER, "--", "env"] + ENV + ["python3", "/usr/local/sbin/tb330fu-powermenu"])
-    log("power menu opened")
+    # the call returns when the dialog is resolved (cancel: error, power off: the system goes down); 90 s is longer than the dialog's 60 s countdown
+    menu = subprocess.Popen(["runuser", "-u", USER, "--", "env"] + ENV +
+                            ["gdbus", "call", "--session", "--timeout", "90", "--dest", "org.gnome.SessionManager", "--object-path",
+                             "/org/gnome/SessionManager", "--method", "org.gnome.SessionManager.Shutdown"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    log("power dialog requested")
 
 
 def short_press():
     if menu_open():
-        menu.terminate()
-        log("power menu closed")
         return
     if not session_up():
         return

@@ -8,7 +8,7 @@ idle-activation-enabled=false
 [org/gnome/settings-daemon/plugins/power]
 sleep-inactive-ac-type='nothing'
 sleep-inactive-battery-type='nothing'
-# the power key is handled by tb330fu-keysd (short press: screen off/on, long press: power menu)
+# the power key is handled by tb330fu-keysd (short press: screen off/on, long press: shutdown dialog)
 power-button-action='nothing'
 idle-dim=false
 
