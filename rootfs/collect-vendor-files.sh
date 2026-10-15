@@ -10,13 +10,14 @@
 #          <out>/conn/*.ko         -> /usr/lib/tb330fu/conn   (CONNSYS / Wi-Fi / Bluetooth modules, load order in order.txt / order_bt.txt)
 #          <out>/keys/*.ko         -> /usr/lib/tb330fu/keys   (power / volume key drivers)
 #          <out>/cpufreq/*.ko      -> /usr/lib/tb330fu/cpufreq (CPU DVFS stack: SSPM + cpufreq_v2)
+#          <out>/audio/*.ko        -> /usr/lib/tb330fu/audio   (AFE, MT6358 codec, AW883xx smart PAs; load order in order.txt)
 set -euo pipefail
 . "$(dirname "$0")/../scripts/lib/common.sh"
 FW=${1:?usage: $0 <vendor firmware dir> <vendor_dlkm module dir> [out dir]}
 DLKM=${2:?usage: $0 <vendor firmware dir> <vendor_dlkm module dir> [out dir]}
 OUT=${3:-$TB_ROOTFS_WORK/vendor-files}
 HERE=$TB_ROOT/rootfs/vendor
-mkdir -p "$OUT"/{firmware,conn,keys,cpufreq}
+mkdir -p "$OUT"/{firmware,conn,keys,cpufreq,audio}
 copy_list() {   # <list file> <source dir> <dest dir> [suffix]
     local n=0 miss=0 f
     while IFS= read -r f; do
@@ -29,6 +30,8 @@ copy_list "$HERE/firmware.list" "$FW" "$OUT/firmware"
 copy_list "$HERE/conn-modules.list" "$DLKM" "$OUT/conn" .ko
 copy_list "$HERE/keys-modules.list" "$DLKM" "$OUT/keys" .ko
 copy_list "$HERE/cpufreq-modules.list" "$DLKM" "$OUT/cpufreq" .ko
+copy_list "$HERE/audio-modules.list" "$DLKM" "$OUT/audio" .ko
+cp "$HERE/audio-order.txt" "$OUT/audio/order.txt"
 cp "$HERE/conn-order.txt" "$OUT/conn/order.txt"
 cp "$HERE/conn-order-bt.txt" "$OUT/conn/order_bt.txt"
 echo "vendor files collected in $OUT"

@@ -1,0 +1,10 @@
+nvmem-mt635x-efuse
+# audio: MT6768 AFE + MT6358 codec + 4 x AW883xx smart PA (the stock modules the sound card needs; MTK_INTERNAL_SPM is replaced by tb330fu_spmstub)
+mtk-afe-external
+snd-soc-mtk-common
+snd-soc-mt6768-afe
+mt6358-accdet
+snd-soc-mt6358
+mtk-sp-spk-amp
+snd-soc-aw883xx
+mt6768-mt6358

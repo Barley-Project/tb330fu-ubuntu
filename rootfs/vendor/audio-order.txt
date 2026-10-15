@@ -1,0 +1,9 @@
+nvmem-mt635x-efuse
+mtk-afe-external
+snd-soc-mtk-common
+snd-soc-mt6768-afe
+mt6358-accdet
+snd-soc-mt6358
+mtk-sp-spk-amp
+snd-soc-aw883xx
+mt6768-mt6358

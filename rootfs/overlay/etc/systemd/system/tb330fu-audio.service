@@ -1,0 +1,12 @@
+[Unit]
+Description=TB330FU audio (MT6768 AFE + MT6358 codec + AW883xx amplifiers, stock modules with an SPM stand-in)
+After=tb330fu-otg.service tb330fu-devd.service tb330fu-keys.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=240
+ExecStart=/bin/sh /usr/libexec/tb330fu-audio.sh
+
+[Install]
+WantedBy=multi-user.target

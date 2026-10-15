@@ -12,6 +12,7 @@
 | `harvest` | `tb330fu_harvest` | 计划内 panic 计时器（默认关） | 仅调试 |
 | `gkiunlock` | `tb330fu_gkiunlock` | kretprobe：`gki_is_module_protected_export()` 返回 false | `tb330fu-conn` 最先 |
 | `ppmtemp` | `tb330fu_ppmtemp` | 给 `mtk_ppm_v3` 注册 CPU 温度回调（参数 `cpu_temp_mc`） | `tb330fu-cpufreq` 末尾 |
+| `spmstub` | `tb330fu_spmstub` | 音频驱动从 `MTK_INTERNAL_SPM.ko` 导入的 3 个函数（`spm_resource_req`、`mtk_idle_notifier_register`、`RegisterConditionEnterSuspend`）的空实现（返回 0）；导出 CRC 由 `scripts/patch-crc.py` 改成音频驱动期望的值 | `tb330fu-audio.sh`（服务默认不启用） |
 | `shot` | `tb330fu_shot` | `/sys/kernel/tb330fu_shot/{cur,buf0,buf1,buf2,front}`：扫描缓冲的截屏接口 | 按需（`tb.sh shot`） |
 | `peek` | `tb330fu_peek` | 物理寄存器读写（sysfs） | 按需 |
 

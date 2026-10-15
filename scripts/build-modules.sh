@@ -2,7 +2,7 @@
 # Build the kernel modules of this project.
 #
 # usage: scripts/build-modules.sh [all | <module> ...]
-#   modules: gkiunlock intpol blklog harvest ovl con fb shot peek ppmtemp simpledrm panfrost   (sources in kernel-modules/<module>)
+#   modules: gkiunlock intpol blklog harvest ovl con fb shot peek ppmtemp spmstub simpledrm panfrost   (sources in kernel-modules/<module>)
 #
 # Method (same as the vendor build of the kernel): every module is compiled with Android clang r510928 against a COPY of the prepared g94 kernel output
 # directory (TB_KDIR; the original is never written to), debug info is stripped, and the vermagic string is changed to the debug kernel's (TB_KREL_TARGET).
@@ -12,7 +12,7 @@
 set -uo pipefail
 . "$(dirname "$0")/lib/common.sh"
 
-ALL="gkiunlock intpol blklog harvest ovl con fb shot peek ppmtemp simpledrm panfrost"
+ALL="gkiunlock intpol blklog harvest ovl con fb shot peek ppmtemp spmstub simpledrm panfrost"
 need make python3 pahole cp find sha256sum
 [ -x "$TB_CLANG/clang" ] || die "clang not found in $TB_CLANG (run scripts/kernel/fetch-toolchain.sh)"
 [ -f "$TB_KDIR/Module.symvers" ] || die "no prepared kernel tree in $TB_KDIR (run scripts/kernel/prepare-kernel-tree.sh)"
@@ -86,6 +86,12 @@ build_one() {
       exit "${PIPESTATUS[0]}" ) || { echo "make failed for $n"; return 1; }
     [ -f "$B/m/$ko.ko" ] || { echo "no $ko.ko produced"; return 1; }
     "$TB_CLANG/llvm-objcopy" --strip-debug "$B/m/$ko.ko" "$B/$ko.stripped.ko" || return 1
+    if [ "$n" = spmstub ]; then    # the stand-in exports under the CRCs that the audio driver (the importer) expects
+        local v=${TB_VENDOR_MODULES:-$TB_FIRMWARE/vendor_dlkm/lib/modules}
+        [ -f "$v/snd-soc-mt6768-afe.ko" ] || die "$v/snd-soc-mt6768-afe.ko not found (set TB_VENDOR_MODULES to the vendor_dlkm module directory)"
+        python3 -I "$TB_ROOT/scripts/patch-crc.py" "$B/$ko.stripped.ko" "$B/$ko.crc.ko" "$v/snd-soc-mt6768-afe.ko" spm_resource_req mtk_idle_notifier_register RegisterConditionEnterSuspend || return 1
+        mv "$B/$ko.crc.ko" "$B/$ko.stripped.ko"
+    fi
     python3 -I "$TB_ROOT/scripts/patch-vermagic.py" "$B/$ko.stripped.ko" "$TB_MODOUT/$ko.ko" "$TB_KREL_BUILD" "$TB_KREL_TARGET" "$TB_VERMAGIC_FLAGS" || return 1
     echo "$(sha "$TB_MODOUT/$ko.ko")  $ko.ko"
 }
