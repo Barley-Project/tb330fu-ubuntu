@@ -1,0 +1,85 @@
+#!/bin/sh
+# Install and initialise Waydroid (Android 13 / LineageOS 20 in an LXC container) on this tablet.  Run as root:
+#     sudo tb330fu-waydroid-setup [--images DIR] [VANILLA|GAPPS]
+#   --images DIR   use the Android images from DIR instead of downloading them: DIR holds the two OTA zips (system.zip + vendor.zip, any file names
+#                  containing "system" / "vendor") or the unpacked system.img + vendor.img.  tools/fetch-waydroid-images.py on a PC downloads and checks them
+#                  (multi-connection, optionally through a proxy; the tablet's own download over Wi-Fi is slow); copy them over with tb.sh put.
+#   VANILLA|GAPPS  which system image to download (default VANILLA = no Google apps); ignored with --images.
+# Needs the kernel of kernel-config/tb330fu.config (PID/IPC namespaces, ...) and the vendor_boot command line with lsm=bpf (SELinux off: an Android init in the
+# container could otherwise load its policy into the host kernel): tb330fu-waydroid-preflight checks both.
+# Steps: preflight -> waydroid apt repository -> packages -> iptables-legacy (the kernel has no nf_tables) -> waydroid init -> container service at boot.
+# Afterwards, in the GNOME session (not over ssh):  waydroid session start &  waydroid show-full-ui     (or the Waydroid entry of the app grid)
+set -eu
+[ "$(id -u)" -eq 0 ] || { echo "run as root (sudo)"; exit 2; }
+IMAGES=""
+ROMTYPE=VANILLA
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --images) IMAGES=${2:?--images needs a directory}; shift 2 ;;
+        VANILLA|GAPPS) ROMTYPE=$1; shift ;;
+        *) echo "usage: $0 [--images DIR] [VANILLA|GAPPS]"; exit 2 ;;
+    esac
+done
+export DEBIAN_FRONTEND=noninteractive
+# apt and the image download go through the PC's HTTP proxy when the ssh reverse tunnel to it is up (127.0.0.1:17897, the detector apt uses), else directly
+PROXY=$(/usr/local/sbin/tb330fu-aptproxy 2>/dev/null || echo DIRECT)
+if [ "$PROXY" != DIRECT ]; then
+    export http_proxy=$PROXY https_proxy=$PROXY HTTP_PROXY=$PROXY HTTPS_PROXY=$PROXY no_proxy=localhost,127.0.0.1
+    echo "downloads go through the proxy $PROXY"
+else
+    echo "no proxy tunnel on 127.0.0.1:17897: downloading directly"
+fi
+PRE=/usr/share/waydroid-extra/images      # a directory Waydroid itself checks for pre-installed images: with system.img + vendor.img in it, nothing is downloaded
+
+echo "== 1/6 preflight"
+/usr/local/sbin/tb330fu-waydroid-preflight
+
+echo "== 2/6 apt repository"
+CODENAME=$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+if [ ! -s /usr/share/keyrings/waydroid.gpg ]; then
+    curl -fsSL https://repo.waydro.id/waydroid.gpg -o /usr/share/keyrings/waydroid.gpg
+fi
+echo "deb [signed-by=/usr/share/keyrings/waydroid.gpg] https://repo.waydro.id/ $CODENAME main" > /etc/apt/sources.list.d/waydroid.list
+apt-get update
+
+echo "== 3/6 packages"
+apt-get install -y --no-install-recommends waydroid lxc dnsmasq-base iptables
+
+echo "== 4/6 iptables-legacy"
+for t in iptables ip6tables; do
+    [ -x "/usr/sbin/$t-legacy" ] && update-alternatives --set "$t" "/usr/sbin/$t-legacy" || true
+done
+
+echo "== 5/6 images + waydroid init"
+if [ -n "$IMAGES" ]; then
+    mkdir -p "$PRE"
+    for kind in system vendor; do
+        z=$(ls "$IMAGES"/*"$kind"*.zip 2>/dev/null | head -1 || true)
+        if [ -n "$z" ]; then
+            echo "unpacking $z"
+            python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$z" "$PRE"
+        elif [ -s "$IMAGES/$kind.img" ]; then
+            cp "$IMAGES/$kind.img" "$PRE/$kind.img"
+        else
+            echo "no $kind image (zip or $kind.img) in $IMAGES"; exit 1
+        fi
+    done
+fi
+if [ -s "$PRE/system.img" ] && [ -s "$PRE/vendor.img" ]; then
+    systemctl stop waydroid-container 2>/dev/null || true
+    waydroid init -f                                   # picks the images in $PRE up (OTA channels "None"), nothing is downloaded
+elif [ ! -s /var/lib/waydroid/images/system.img ] || [ ! -s /var/lib/waydroid/images/vendor.img ]; then
+    # (waydroid.cfg is written before the download starts, so an interrupted init leaves it behind: the images are the criterion)
+    waydroid init -s "$ROMTYPE" -f
+else
+    echo "images are already there (/var/lib/waydroid/images), skipping; use 'waydroid upgrade' to update them"
+fi
+
+echo "== 6/6 container service"
+systemctl enable --now waydroid-container.service
+sleep 3
+systemctl --no-pager --lines=8 status waydroid-container.service || true
+echo
+echo "Waydroid is installed. In the GNOME session (not over ssh):"
+echo "    waydroid session start &"
+echo "    waydroid show-full-ui"

@@ -1,56 +1,46 @@
 #!/bin/sh
-# Read-only, manual preflight only. This script never mounts binderfs or starts Waydroid.
+# Read-only check of what Waydroid needs from the RUNNING kernel (kernel-config/tb330fu.config builds it). It never mounts binderfs or starts Waydroid.
+#   exit 0: every prerequisite passes     exit 1: something is missing (the message says what)
 set -u
-CONFIG_FILE=${TB330FU_KERNEL_CONFIG:-/usr/share/tb330fu/kernel-config.row074}
 blocked=0
 pass() { echo "PASS: $*"; }
 blocked() { echo "BLOCKED: $*"; blocked=1; }
+cfg() { zcat /proc/config.gz 2>/dev/null | grep -qx "$1=y\|$1=m"; }
 
-if [ -r "$CONFIG_FILE" ]; then
-    for option in CONFIG_ANDROID_BINDER_IPC CONFIG_ANDROID_BINDERFS CONFIG_NAMESPACES \
-                  CONFIG_UTS_NS CONFIG_IPC_NS CONFIG_PID_NS CONFIG_USER_NS CONFIG_NET_NS \
-                  CONFIG_CGROUPS CONFIG_CGROUP_PIDS CONFIG_CGROUP_DEVICE CONFIG_MEMFD_CREATE; do
-        if grep -qx "$option=y" "$CONFIG_FILE"; then pass "$option=y"; else blocked "$option is not enabled in the ROW kernel config"; fi
+if [ -r /proc/config.gz ]; then
+    for option in CONFIG_ANDROID_BINDER_IPC CONFIG_ANDROID_BINDERFS CONFIG_NAMESPACES CONFIG_UTS_NS CONFIG_IPC_NS CONFIG_PID_NS CONFIG_NET_NS \
+                  CONFIG_CGROUPS CONFIG_CGROUP_BPF CONFIG_BPF_SYSCALL CONFIG_MEMFD_CREATE CONFIG_VETH CONFIG_BRIDGE CONFIG_NF_NAT \
+                  CONFIG_NETFILTER_XT_TARGET_MASQUERADE CONFIG_NETFILTER_XT_TARGET_CHECKSUM CONFIG_IP_NF_NAT CONFIG_DMABUF_HEAPS_SYSTEM; do
+        if cfg "$option"; then pass "$option"; else blocked "$option is not enabled in the running kernel (is this the kernel of kernel-config/tb330fu.config?)"; fi
     done
+    cfg CONFIG_USER_NS && pass "CONFIG_USER_NS (optional)" || echo "INFO: CONFIG_USER_NS is off (optional: only needed for unprivileged containers)"
 else
-    blocked "kernel config unavailable at $CONFIG_FILE"
+    blocked "/proc/config.gz is not available"
 fi
 
-if grep -Eq '^[[:space:]]*nodev[[:space:]]+binder[[:space:]]*$' /proc/filesystems 2>/dev/null; then
-    pass "binder filesystem is registered"
+# SELinux is built into the GKI kernel and stays active without a policy; an Android init in the container could load its policy into the host kernel and switch
+# SELinux on (enforcing) for the whole system.  The vendor_boot of this project boots with lsm=bpf, which leaves SELinux uninitialised.
+if [ -d /sys/fs/selinux ] || grep -q ' selinuxfs ' /proc/mounts 2>/dev/null; then
+    blocked "SELinux is active in the running kernel: boot with lsm=bpf on the kernel command line (vendor-boot/build-vendor-boot.sh)"
 else
-    blocked "binder filesystem is not registered at runtime"
+    pass "SELinux is not active ($(cat /sys/kernel/security/lsm 2>/dev/null))"
 fi
+grep -Eq '^[[:space:]]*nodev[[:space:]]+binder[[:space:]]*$' /proc/filesystems 2>/dev/null && pass "the binder filesystem is registered" || blocked "the binder filesystem is not registered"
 if grep -q ' /sys/fs/cgroup cgroup2 ' /proc/mounts 2>/dev/null && [ -r /sys/fs/cgroup/cgroup.controllers ]; then
     pass "unified cgroup v2 is mounted ($(cat /sys/fs/cgroup/cgroup.controllers))"
 else
-    blocked "unified cgroup v2 controllers are unavailable"
+    blocked "unified cgroup v2 is not mounted"
 fi
-if [ -d /dev/binderfs ] && grep -q ' /dev/binderfs binder ' /proc/mounts 2>/dev/null; then
+if grep -q ' /dev/binderfs binder ' /proc/mounts 2>/dev/null; then
     pass "binderfs is mounted at /dev/binderfs"
 else
-    echo "INFO: binderfs is not mounted; preflight will not mount it"
+    echo "INFO: binderfs is not mounted (Waydroid mounts it itself)"
 fi
-if command -v unshare >/dev/null 2>&1 && unshare --user --map-root-user true >/dev/null 2>&1; then
-    pass "user namespaces can be created"
-else
-    blocked "user namespace runtime check failed"
-fi
-if command -v unshare >/dev/null 2>&1 && unshare --pid --fork true >/dev/null 2>&1; then
-    pass "PID namespaces can be created"
-else
-    blocked "PID namespace runtime check failed"
-fi
-if command -v python3 >/dev/null 2>&1 && python3 -c 'import os; fd=os.memfd_create("tb330fu-preflight"); os.close(fd)' >/dev/null 2>&1; then
-    pass "memfd_create syscall works"
-else
-    blocked "memfd_create runtime check failed"
-fi
-if command -v waydroid >/dev/null 2>&1; then
-    echo "INFO: Waydroid binary is installed, but no Waydroid unit is enabled by this image"
-else
-    echo "INFO: Waydroid is not installed and no Waydroid unit is enabled"
-fi
+[ -e /dev/ashmem ] && pass "/dev/ashmem" || echo "INFO: no /dev/ashmem (Android 13 images use memfd)"
+[ -e /dev/dri/renderD128 ] && pass "GPU render node /dev/dri/renderD128" || blocked "no GPU render node (tb330fu-gpu.service)"
+command -v unshare >/dev/null 2>&1 && unshare --pid --ipc --uts --fork --mount-proc true >/dev/null 2>&1 && pass "PID/IPC/UTS/mount namespaces can be created" || blocked "namespace runtime check failed"
+command -v python3 >/dev/null 2>&1 && python3 -c 'import os; os.close(os.memfd_create("tb330fu-preflight"))' >/dev/null 2>&1 && pass "memfd_create works" || blocked "memfd_create failed"
+if command -v waydroid >/dev/null 2>&1; then echo "INFO: waydroid $(waydroid --version 2>/dev/null | head -1) is installed"; else echo "INFO: Waydroid is not installed (tb330fu-waydroid-setup installs it)"; fi
 
 if [ "$blocked" -ne 0 ]; then
     echo "BLOCKED: do not install/start Waydroid until every prerequisite passes"
