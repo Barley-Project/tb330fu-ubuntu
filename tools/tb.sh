@@ -20,7 +20,8 @@
 #   tb.sh serial run "<cmd>"   same as `tb.sh sudo` but over the CDC-ACM serial console (works without the IP link)
 #   tb.sh nic                  show the PC-side network adapter of the gadget (MAC 02:00:00:00:00:02)
 set -u
-L="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+L="$(cd "$HERE/.." && pwd)"
 KEY="${TB_SSH_KEY:-$HOME/.ssh/tb330fu_dev}"
 TB_USER="${TB_USER:-ubuntu}"
 FB="${FASTBOOT:-fastboot}"
@@ -32,7 +33,7 @@ SSHO=(-i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHo
 PW="${TB_PASSWORD:-}"
 
 nic() {
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$L/devtools/ncm-adapter.ps1")" 2>/dev/null | tr -d '\r'
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$HERE/ncm-adapter.ps1")" 2>/dev/null | tr -d '\r'
 }
 
 try_ssh() { ssh -n "${SSHO[@]}" -o ConnectTimeout=4 "$TB_USER@$1" true >/dev/null 2>&1 </dev/null; }
@@ -85,7 +86,7 @@ case "$cmd" in
     shot)
         name="${1:-shot_$(date +%m%d_%H%M%S)}"
         t_sudo tb330fu-shot </dev/null > "$OUT/$name.raw" || exit 1
-        python -I "$L/devtools/tbshot.py" "$OUT/$name.raw" "$OUT/$name.png" && rm -f "$OUT/$name.raw"
+        python -I "$HERE/tbshot.py" "$OUT/$name.raw" "$OUT/$name.png" && rm -f "$OUT/$name.raw"
         cp "$OUT/$name.png" "$OUT/latest.png" ;;
     time)   t_sudo date -u -s "'$(date -u '+%Y-%m-%d %H:%M:%S')'" </dev/null ;;
     fastboot)
@@ -111,6 +112,6 @@ case "$cmd" in
         "$0" reboot || exit 1
         sleep 20
         "$0" wait 300 ;;
-    serial) python -I "$L/devtools/tbserial.py" "$@" ;;
+    serial) python -I "$HERE/tbserial.py" "$@" ;;
     *) sed -n '2,24p' "$0"; exit 1 ;;
 esac
