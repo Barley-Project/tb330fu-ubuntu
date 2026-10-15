@@ -15,13 +15,29 @@ Needs: bluetooth.ko + hci_uart.ko loaded (tb330fu-conn.sh), bluez (btattach, blu
 import os
 import select
 import signal
+import struct
 import subprocess
 import sys
 import time
 import tty
 
 BDADDR_FILE = "/var/lib/tb330fu/nvram/BT_Addr"
+# optional HCI trace in btsnoop format (datalink 1002 = HCI UART H4), readable with `btmon -r` and Wireshark: TB330FU_BTD_TRACE=/var/log/tb330fu/btd.snoop.
+# The kernel's monitor channel (what btmon normally records) shows no HCI frames on this kernel, so the bridge records what passes through it instead.
+TRACE_PATH = os.environ.get("TB330FU_BTD_TRACE")
+TRACE_MAX = 32 << 20
+trace_fd = None
+trace_bytes = 0
 OP_RESET, OP_SYNC_TRAIN, OP_SET_BDADDR = 0x0c03, 0x0c77, 0xfc1a
+OP_READ_LOCAL_COMMANDS = 0x1002
+# The firmware's "Read Local Supported Commands" bitmap has no bit at all in octets 25..28, i.e. it does not claim any of the legacy LE commands (LE Set Scan
+# Enable, LE Create Connection, LE Connection Update, LE Read Remote Used Features, the accept list, ...) although it implements them (probed with hcitool:
+# accept list size 64, supported states, LE Rand all answer).  Linux builds its LE event mask from that bitmap (hci_le_set_event_mask_sync): without the bits the
+# events "LE Read Remote Features Complete" and "LE Connection Update Complete" stay masked.  A new connection then never leaves the configuration state ("LE Read
+# Remote Used Features" is sent, its completion never arrives), nothing is sent over L2CAP/SMP and every pairing times out; the accept list is never initialised
+# either.  Octet 25: LE Set Event Mask .. LE Set Advertising Data (not the reserved bit 3), 26: scan response data .. clear accept list, 27: add accept list ..
+# LE Rand, 28: LE Start Encryption, LTK request replies, LE Read Supported States (bit numbers: BlueZ tools/monitor/packet.c, commands_table).
+LE_COMMAND_BITS = {25: 0xf7, 26: 0xff, 27: 0xff, 28: 0x0f}
 
 
 def h4_total(buf):
@@ -70,6 +86,23 @@ def event_opcode(pkt):
     return None
 
 
+def trace(pkt, to_host):
+    """append one H4 packet to the trace file (direction: 1 = controller -> host, 0 = host -> controller)"""
+    global trace_bytes
+    if trace_fd is None or trace_bytes > TRACE_MAX:
+        return
+    ts = int(time.time() * 1000000) + 0x00dcddb30f2f8000          # btsnoop timestamps: microseconds since 0000-01-01
+    rec = struct.pack(">IIIIq", len(pkt), len(pkt), 1 if to_host else 0, 0, ts) + bytes(pkt)
+    trace_fd.write(rec)
+    trace_bytes += len(rec)
+
+
+if TRACE_PATH:
+    os.makedirs(os.path.dirname(TRACE_PATH), exist_ok=True)
+    trace_fd = open(TRACE_PATH, "wb", buffering=0)
+    trace_fd.write(b"btsnoop\x00" + struct.pack(">II", 1, 1002))
+    print("tb330fu-btd: tracing HCI to", TRACE_PATH, flush=True)
+
 bdaddr = None
 try:
     raw = open(BDADDR_FILE, "rb").read(6)
@@ -110,6 +143,7 @@ while True:
     if held is not None and time.time() >= held_until:
         log("no reply to the vendor BD address command, continuing")
         os.write(master, held)
+        trace(held, True)
         held = None
     if bt in r:
         data = os.read(bt, 4096)
@@ -124,9 +158,17 @@ while True:
             elif held is not None and op == OP_SET_BDADDR:
                 log("BD address written, status %s" % ("ok" if pkt[1] == 0x0f and pkt[3] == 0 or pkt[1] == 0x0e and pkt[6] == 0 else "failed"))
                 os.write(master, held)
+                trace(held, True)
                 held = None
             else:
+                if op == OP_READ_LOCAL_COMMANDS and pkt[1] == 0x0e and len(pkt) >= 7 + 64 and pkt[6] == 0:
+                    b = bytearray(pkt)
+                    for octet, bits in LE_COMMAND_BITS.items():
+                        b[7 + octet] |= bits
+                    pkt = bytes(b)
+                    log("supported-commands bitmap: legacy LE commands (octets 25..28) claimed")
                 os.write(master, pkt)
+                trace(pkt, True)
     if master in r:
         try:
             data = os.read(master, 4096)
@@ -135,6 +177,10 @@ while True:
         for pkt in host_framer.feed(data):
             if pkt[0] == 0x01 and (pkt[1] | pkt[2] << 8) == OP_SYNC_TRAIN:
                 # Command Complete: ncmd 1, opcode, status 0 + interval(2) + timeout(4) + service data(1)
-                os.write(master, bytes([0x04, 0x0e, 0x0b, 0x01, OP_SYNC_TRAIN & 0xff, OP_SYNC_TRAIN >> 8]) + bytes(8))
+                trace(pkt, False)
+                local = bytes([0x04, 0x0e, 0x0b, 0x01, OP_SYNC_TRAIN & 0xff, OP_SYNC_TRAIN >> 8]) + bytes(8)
+                os.write(master, local)
+                trace(local, True)
             else:
                 os.write(bt, pkt)
+                trace(pkt, False)

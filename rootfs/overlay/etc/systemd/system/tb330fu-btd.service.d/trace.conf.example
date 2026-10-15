@@ -1,0 +1,5 @@
+# Optional: copy to trace.conf and restart tb330fu-btd.  The bridge then records every HCI packet that passes through it in btsnoop format (read with
+# `btmon -r /var/log/tb330fu/btd.snoop` or Wireshark; capped at 32 MiB).  The trace contains EVERYTHING that is sent over the Bluetooth link, the keystrokes
+# of a Bluetooth keyboard included, so leave it off unless you are debugging the link.
+[Service]
+Environment=TB330FU_BTD_TRACE=/var/log/tb330fu/btd.snoop
