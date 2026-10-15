@@ -1,0 +1,2 @@
+# eMMC: BFQ keeps interactive reads (the desktop, app start) ahead of bulk writes (apt, downloads, copying); mq-deadline lets a write burst starve them
+ACTION=="add|change", KERNEL=="mmcblk[0-9]", SUBSYSTEM=="block", ATTR{queue/scheduler}="bfq"

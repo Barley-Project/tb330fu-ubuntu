@@ -1,0 +1,12 @@
+[Unit]
+Description=TB330FU zram swap
+After=local-fs.target tb330fu-devd.service
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh /usr/libexec/tb330fu-zram.sh
+
+[Install]
+WantedBy=multi-user.target

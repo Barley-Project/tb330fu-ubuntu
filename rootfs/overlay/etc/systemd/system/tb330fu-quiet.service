@@ -1,0 +1,15 @@
+[Unit]
+Description=TB330FU: stop echoing every kernel message to the console (ramoops/pstore) once the system is up
+After=local-fs.target
+Before=tb330fu-conn.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The kernel command line has ignore_loglevel (boot debugging).  The vendor Wi-Fi/Bluetooth/fuel-gauge drivers log at KERN_WARNING level by the dozen per
+# second; with ignore_loglevel every line is formatted and copied to the console (pstore ramoops with ECC) in the context of the driver thread.
+# Messages stay in the kernel ring buffer, dmesg and the journal; only the console (and the panic path, which is unaffected) stops echoing them.
+ExecStart=/bin/sh -c 'echo N > /sys/module/printk/parameters/ignore_loglevel; echo "4 4 1 4" > /proc/sys/kernel/printk'
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,8 @@
+// TB330FU: apt on an eMMC with slow fsync.
+// dpkg fsyncs every file it unpacks (thousands per upgrade); --force-unsafe-io skips that and syncs once at the end.  Trade-off: a power loss in the middle
+// of an install can leave the package that was being unpacked broken (dpkg --configure -a / reinstall fixes it); the rest of the system is not affected.
+DPkg::Options { "--force-unsafe-io"; };
+// no Translation files (saves a few MB of download and index time per update), retry flaky Wi-Fi downloads
+Acquire::Languages "none";
+Acquire::Retries "2";
+Acquire::http::Timeout "20";

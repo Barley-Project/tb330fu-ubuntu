@@ -91,15 +91,23 @@ install -d "$R/usr/share/tb330fu"
 
 note "6. kernel modules built by this project"
 M=$R/usr/lib/tb330fu/modules; install -d "$M" "$R/usr/lib/tb330fu/cpufreq"
-for m in simpledrm panfrost tb330fu_gkiunlock tb330fu_shot tb330fu_peek; do install -m 0644 "$TB_MODOUT/$m.ko" "$M/$m.ko"; done
+for m in simpledrm panfrost tb330fu_gkiunlock tb330fu_shot tb330fu_peek tb330fu_spmstub; do install -m 0644 "$TB_MODOUT/$m.ko" "$M/$m.ko"; done
 install -m 0644 "$TB_MODOUT/simpledrm.ko" "$M/simpledrm.ko.good"      # fallback of tb330fu-gpu.sh if a newer simpledrm.ko is ever refused
 install -m 0644 "$TB_MODOUT/tb330fu_ppmtemp.ko" "$R/usr/lib/tb330fu/cpufreq/"
 
+note "6b. in-tree kernel modules (zram, squashfs, rfcomm, bnep, hidp, ...) of the kernel build that is flashed as boot.img"
+if [ -f "$TB_DIST/kernel-modules.tar" ]; then
+    tar xf "$TB_DIST/kernel-modules.tar" -C "$R"
+    sh_chroot depmod "$TB_KREL_TARGET"
+else
+    echo "WARNING: $TB_DIST/kernel-modules.tar not found (scripts/kernel/stage-modules.sh): no zram swap, squashfs, rfcomm/bnep/hidp"
+fi
+
 note "7. vendor files from your firmware"
 if [ -d "$VF" ]; then
-    install -d "$R/vendor/firmware" "$R/usr/lib/tb330fu/conn" "$R/usr/lib/tb330fu/keys"
+    install -d "$R/vendor/firmware" "$R/usr/lib/tb330fu/conn" "$R/usr/lib/tb330fu/keys" "$R/usr/lib/tb330fu/audio"
     cp -a "$VF/firmware/." "$R/vendor/firmware/"; cp -a "$VF/conn/." "$R/usr/lib/tb330fu/conn/"
-    cp -a "$VF/keys/." "$R/usr/lib/tb330fu/keys/"; cp -a "$VF/cpufreq/." "$R/usr/lib/tb330fu/cpufreq/"
+    cp -a "$VF/keys/." "$R/usr/lib/tb330fu/keys/"; cp -a "$VF/cpufreq/." "$R/usr/lib/tb330fu/cpufreq/"; cp -a "$VF/audio/." "$R/usr/lib/tb330fu/audio/"
     chmod 0644 "$R"/usr/lib/tb330fu/*/*.ko
 else
     echo "WARNING: $VF not found: no Wi-Fi, Bluetooth, power/volume keys or CPU frequency scaling (see rootfs/collect-vendor-files.sh)"
@@ -107,7 +115,7 @@ fi
 
 note "8. enable services, defaults"
 for u in tb330fu-devd tb330fu-usb-gadget tb330fu-growfs tb330fu-ssh-hostkeys tb330fu-gpu tb330fu-conn tb330fu-otg tb330fu-keys tb330fu-keysd tb330fu-cpufreq \
-         tb330fu-thermalguard tb330fu-gnome tb330fu-touchd systemd-networkd NetworkManager ssh; do
+         tb330fu-thermalguard tb330fu-quiet tb330fu-zram tb330fu-gnome tb330fu-touchd systemd-networkd NetworkManager ssh systemd-timesyncd; do
     systemctl --root="$R" enable "$u.service" 2>&1 | tail -1 || true
 done
 systemctl --root="$R" set-default graphical.target

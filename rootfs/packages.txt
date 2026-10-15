@@ -27,6 +27,7 @@ busybox-static
 tzdata
 locales
 fake-hwclock
+systemd-timesyncd
 ca-certificates
 # desktop
 gnome-shell

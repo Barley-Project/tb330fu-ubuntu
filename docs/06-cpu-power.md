@@ -50,4 +50,16 @@ tb330fu_ppmtemp                                          (见下)
 
 * 厂商 `cpuidle` 被命令行 `cpuidle.off=1` 关掉（早期 CN idle‑states 会让 tick 冻结），所以空闲功耗偏高、机身偏热。
 * `apt-get update` 在 Wi‑Fi 正常时约 5 秒，装小包约 6 秒；慢多半是 CPU 频率或没有网络（旧版 Wi‑Fi 崩溃保护标记有时清不掉，会在快速重启后悄悄跳过 Wi‑Fi，已修）。
-* 可选：`/etc/apt/apt.conf.d/` 里 `Acquire::Languages "none";` 省掉翻译索引；`dpkg --force-unsafe-io`（断电可能丢数据，默认不开）。
+* `etc/apt/apt.conf.d/99tb330fu` 默认已经打开 `Acquire::Languages "none"`（省掉翻译索引）和 `dpkg --force-unsafe-io`（见下表）。
+
+## 内存、存储与其它系统默认值（`rootfs/overlay`）
+
+| 文件 | 作用 |
+|---|---|
+| `tb330fu-zram.service`、`usr/libexec/tb330fu-zram.sh` | zram 交换区（zstd，容量 = 内存的一半，优先级 100）：8 GB 内存加浏览器和 Android 容器会撞上 OOM killer。`zram.ko` 是自编内核的树内模块（`CONFIG_ZRAM=m`），没有它就跳过 |
+| `etc/sysctl.d/90-tb330fu.conf` | `vm.dirty_background_bytes` = 32 MiB、`vm.dirty_bytes` = 128 MiB：默认按百分比最多攒约 1.5 GB 脏页，apt 或下载时一次性写出，其它程序的 `fsync()` 全卡在后面，桌面冻结。`vm.swappiness=100`、`vm.page-cluster=0`（swap 在 zram 上，便宜） |
+| `etc/udev/rules.d/60-tb330fu-iosched.rules` | eMMC 用 BFQ：交互式读取优先于批量写入 |
+| `tb330fu-quiet.service` | 开机完成后关掉 `ignore_loglevel` 并把控制台日志级别设成 4：厂商 Wi‑Fi/BT/电量计驱动每秒打几十条 WARNING，`ignore_loglevel` 会把每一条都格式化后抄到 pstore 控制台。消息仍在 dmesg 和 journal 里 |
+| `etc/apt/apt.conf.d/99tb330fu` | `--force-unsafe-io`（eMMC 上 fsync 很慢；代价：断电时正在解包的那个包可能损坏，`dpkg --configure -a` 或重装可修，其余不受影响）、不下载翻译索引、下载重试 |
+| `etc/systemd/timesyncd.conf.d/tb330fu.conf` | NTP 服务器（阿里云、腾讯云、cn.pool.ntp.org），后备 `ntp.ubuntu.com`；平板没有 RTC 电池，开机时间靠网络校正（`systemd-timesyncd` 在 `packages.txt` 里） |
+| `etc/polkit-1/rules.d/50-tb330fu-power.rules` | `sudo` 组可以在任何会话里关机/重启（ssh、root 服务经 `runuser` 起的进程不算活动的本地会话，否则 polkit 会要管理员密码）；块抑制器（apt/dpkg 在运行）仍然有效 |
